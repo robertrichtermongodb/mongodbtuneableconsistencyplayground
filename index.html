@@ -130,9 +130,39 @@
     #log .err  { color: #FF6B6B; }
     #log .info { color: #7EC8E3; }
 
+    /* ── WIP popup (first view only) ── */
+    .wip-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9999; opacity: 0; visibility: hidden; transition: opacity .2s, visibility .2s;
+    }
+    .wip-overlay.visible { opacity: 1; visibility: visible; }
+    .wip-popup {
+      background: #182535; border: 2px solid #F5A623;
+      border-radius: 12px; padding: 24px 28px; max-width: 420px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .wip-popup h2 { color: #F5A623; font-size: 1rem; margin-bottom: 12px; }
+    .wip-popup p { color: #D8E8F3; font-size: 0.9rem; line-height: 1.5; margin-bottom: 18px; }
+    .wip-popup button { width: 100%; }
+
+    /* ── Footer ──────────────────────────────────────────── */
+    footer { font-size: 0.7rem; color: #3D5A6A; text-align: center; line-height: 1.8; }
+    footer a { color: #4E7A90; text-decoration: underline; }
+    footer a:hover { color: #7AAABF; }
+
   </style>
 </head>
 <body>
+
+<!-- WIP first-view popup -->
+<div class="wip-overlay" id="wip-overlay">
+  <div class="wip-popup">
+    <h2>ATTENTION!</h2>
+    <p>WIP VERSION! NOT FULLY TESTED AND CHECKED FOR CORRECTNESS!</p>
+    <button onclick="dismissWipPopup()">Got it</button>
+  </div>
+</div>
 
 <header>
   <h1>MongoDB Concerns Playground</h1>
@@ -258,6 +288,36 @@
   <div id="log"></div>
 </div>
 
+<footer>
+  <div style="margin-bottom:6px">
+    MongoDB Read/Write Concerns Playground &nbsp;·&nbsp;
+    <a href="https://www.mongodb.com/docs/manual/reference/read-concern/" target="_blank" rel="noopener">MongoDB Docs: Read Concern</a>
+    &nbsp;·&nbsp;
+    <a href="https://www.mongodb.com/docs/manual/reference/write-concern/" target="_blank" rel="noopener">MongoDB Docs: Write Concern</a>
+    &nbsp;·&nbsp; Last updated: March 15, 2026
+  </div>
+  <div>
+    Author: <a href="https://www.linkedin.com/in/robert-richter-27b46812b/" target="_blank" rel="noopener">Robert Richter</a>
+    &nbsp;·&nbsp; <span style="font-style:italic">Implemented by AI. Designed, reviewed and iterated by human.</span>
+    &nbsp;·&nbsp; <a href="https://github.com/robertrichtermongodb/mongodb-read-write-concerns-playground" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #1E2D3A;color:#3A5060;font-style:italic">
+    ⚠ This simulator may contain inaccuracies and could become outdated. Validated against MongoDB 8 — always consult the
+    <a href="https://www.mongodb.com/docs/manual/reference/read-concern/" target="_blank" rel="noopener">official MongoDB documentation</a>
+    before applying these behaviours in production.
+  </div>
+</footer>
+
+<script>
+  (function() {
+    document.addEventListener('DOMContentLoaded', function() {
+      document.getElementById('wip-overlay').classList.add('visible');
+    });
+    window.dismissWipPopup = function() {
+      document.getElementById('wip-overlay').classList.remove('visible');
+    };
+  })();
+</script>
 <script src="js/state.js"></script>
 <script src="js/icons.js"></script>
 <script src="js/engine.js"></script>
