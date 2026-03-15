@@ -146,6 +146,23 @@
     .wip-popup p { color: #D8E8F3; font-size: 0.9rem; line-height: 1.5; margin-bottom: 18px; }
     .wip-popup button { width: 100%; }
 
+    /* ── Welcome popup ── */
+    .welcome-overlay {
+      position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 9998; opacity: 0; visibility: hidden; transition: opacity .2s, visibility .2s;
+    }
+    .welcome-overlay.visible { opacity: 1; visibility: visible; }
+    .welcome-popup {
+      background: #182535; border: 2px solid #00ED64;
+      border-radius: 12px; padding: 24px 28px; max-width: 440px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    }
+    .welcome-popup h2 { color: #00ED64; font-size: 1rem; margin-bottom: 12px; }
+    .welcome-popup p { color: #D8E8F3; font-size: 0.9rem; line-height: 1.6; margin-bottom: 14px; }
+    .welcome-popup p:last-of-type { margin-bottom: 20px; }
+    .welcome-popup button { width: 100%; }
+
     /* ── Footer ──────────────────────────────────────────── */
     footer { font-size: 0.7rem; color: #3D5A6A; text-align: center; line-height: 1.8; }
     footer a { color: #4E7A90; text-decoration: underline; }
@@ -154,6 +171,16 @@
   </style>
 </head>
 <body>
+
+<!-- Welcome popup -->
+<div class="welcome-overlay" id="welcome-overlay">
+  <div class="welcome-popup">
+    <h2>Welcome</h2>
+    <p>This simulator helps you understand how MongoDB read and write concerns shape data flow in a replica set. The goal is to make these guarantees tangible.</p>
+    <p><strong>How to use:</strong> Fire a write (e.g. “New doc with ID 1”), then experiment with different read concerns and read preferences to see what each brings back. You can also inject faults — click nodes to toggle health, links to partition — and observe how consistency changes.</p>
+    <button onclick="dismissWelcomePopup()">Got it</button>
+  </div>
+</div>
 
 <!-- WIP first-view popup -->
 <div class="wip-overlay" id="wip-overlay">
@@ -311,8 +338,12 @@
 <script>
   (function() {
     document.addEventListener('DOMContentLoaded', function() {
-      document.getElementById('wip-overlay').classList.add('visible');
+      document.getElementById('welcome-overlay').classList.add('visible');
     });
+    window.dismissWelcomePopup = function() {
+      document.getElementById('welcome-overlay').classList.remove('visible');
+      document.getElementById('wip-overlay').classList.add('visible');
+    };
     window.dismissWipPopup = function() {
       document.getElementById('wip-overlay').classList.remove('visible');
     };
