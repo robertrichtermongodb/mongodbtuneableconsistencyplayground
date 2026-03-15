@@ -1,0 +1,1197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MongoDB Read/Write Concerns Playground</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0F1923; color: #D8E8F3;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; padding: 24px 16px 56px; gap: 14px;
+    }
+    header { text-align: center; }
+    h1 { font-size: 1.55rem; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+    .subtitle { margin-top: 4px; font-size: 0.84rem; color: #90AEBF; }
+
+    .card {
+      width: 100%; max-width: 920px;
+      background: #182535; border: 1px solid #26384A; border-radius: 12px;
+    }
+
+    /* ── Controls ── */
+    .controls { display: flex; flex-direction: column; gap: 11px; padding: 13px 16px; }
+    .ctrl-row  { display: flex; gap: 14px; align-items: flex-end; flex-wrap: wrap; }
+    .ctrl-row.border-top { border-top: 1px solid #1E3346; padding-top: 11px; }
+
+    .cg { display: flex; flex-direction: column; gap: 4px; }
+    .cg label { font-size: 0.72rem; color: #90AEBF; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    select, input[type=number] {
+      background: #0A1E2B; border: 1px solid #26384A; color: #D8E8F3;
+      border-radius: 7px; padding: 6px 9px; font-size: 0.85rem; min-width: 110px; cursor: pointer;
+    }
+    select:focus, input[type=number]:focus { outline: 2px solid #00ED64; border-color: transparent; }
+
+    .btn-group { display: flex; gap: 5px; }
+    button {
+      background: #00ED64; color: #0F1923; border: none;
+      border-radius: 8px; padding: 7px 15px; font-size: 0.86rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap;
+    }
+    button:hover { background: #00c050; }
+    button:disabled { background: #26384A; color: #5a7a8a; cursor: not-allowed; }
+    button.sec { background: #1A2E40; color: #D8E8F3; border: 1px solid #26384A; }
+    button.sec:hover { background: #26384A; }
+    button.sec.on { background: #0A2535; border-color: #00ED64; color: #00ED64; }
+    button.read-btn { background: #7EC8E3; color: #0F1923; }
+    button.read-btn:hover { background: #5ab8d8; }
+    button.sec.rmode-on { background: #0A2030; border-color: #7EC8E3; color: #7EC8E3; }
+
+    /* ── Two-column controls ── */
+    .ctrl-cols { display: flex; gap: 0; align-items: stretch; }
+    .ctrl-col { flex: 1; display: flex; flex-direction: column; gap: 9px; padding: 0 14px; }
+    .ctrl-col:first-child { padding-left: 0; }
+    .ctrl-col:last-child  { padding-right: 0; }
+    .ctrl-col-divider { width: 1px; background: #1E3346; flex-shrink: 0; margin: 2px 0; }
+    .ctrl-col-header { font-size: 0.72rem; font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; padding-bottom: 4px; }
+    .write-col .ctrl-col-header { color: #F5A623; border-bottom: 1px solid #2A3D1A; }
+    .read-col  .ctrl-col-header { color: #7EC8E3; border-bottom: 1px solid #1A2E40; }
+
+    /* ── Step panels ── */
+    .step-panels { display: flex; border-top: 1px solid #26384A; }
+    .step-panel { flex: 1; padding: 13px 16px 15px; }
+    .step-panel.hidden { display: none; }
+    .step-panel + .step-panel { border-left: 1px solid #26384A; }
+    .write-step-panel { border-top: 2px solid #F5A623; }
+    .read-step-panel  { border-top: 2px solid #7EC8E3; }
+    .step-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; flex-wrap: wrap; }
+    .step-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
+    .write-label { background: #F5A623; color: #0F1923; }
+    .read-label  { background: #7EC8E3; color: #0F1923; }
+    .step-badge { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #90AEBF; }
+    .step-dots { display: flex; gap: 5px; }
+    .step-dot { width: 7px; height: 7px; border-radius: 50%; background: #26384A; transition: background .2s; }
+    .step-dot.done    { background: #00ED64; }
+    .step-dot.current { background: #F5A623; }
+    .step-title { font-size: 0.97rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .step-explain { font-size: 0.83rem; color: #90AEBF; line-height: 1.6; }
+    .step-explain strong { color: #D8E8F3; }
+
+    /* ── Stage ── */
+    .stage { padding: 14px; }
+    #canvas { display: block; width: 100%; height: 460px; }
+
+    /* ── Log ── */
+    .log-panel { padding: 11px 16px; }
+    .log-panel h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: .06em; color: #90AEBF; margin-bottom: 7px; }
+    #log { font-family: 'SF Mono','Fira Code',monospace; font-size: 0.77rem; line-height: 1.65; color: #90AEBF; min-height: 44px; max-height: 120px; overflow-y: auto; }
+    #log .ok   { color: #00ED64; }
+    #log .warn { color: #F5A623; }
+    #log .err  { color: #FF6B6B; }
+    #log .info { color: #7EC8E3; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>MongoDB Concerns Playground</h1>
+  <p class="subtitle">Visualise how read &amp; write concerns shape data flow in a 3-node replica set</p>
+</header>
+
+<div class="card">
+  <div class="controls">
+
+    <!-- Two-column: Write | Read -->
+    <div class="ctrl-cols">
+
+      <!-- Left: Write Client -->
+      <div class="ctrl-col write-col">
+        <div class="ctrl-col-header">Write Client</div>
+        <div class="ctrl-row">
+          <div class="cg">
+            <label>Write concern w</label>
+            <select id="sel-w">
+              <option value="0">0 — fire &amp; forget</option>
+              <option value="1">1 — primary only</option>
+              <option value="2">2 — primary + 1 sec</option>
+              <option value="3">3 — all nodes</option>
+              <option value="majority" selected>majority</option>
+            </select>
+          </div>
+          <div class="cg">
+            <label>Journal (j)</label>
+            <select id="sel-j">
+              <option value="false" selected>false</option>
+              <option value="true">true</option>
+            </select>
+          </div>
+          <div class="cg">
+            <label>wtimeout (ms)</label>
+            <input id="inp-wtimeout" type="number" value="0" min="0" step="500" style="min-width:80px" />
+          </div>
+        </div>
+        <div class="btn-group">
+          <button id="btn-write-start" onclick="handleWrite()">Start Write</button>
+          <button class="sec" id="btn-write-next" onclick="advanceWriteStep()" disabled>Next →</button>
+        </div>
+      </div>
+
+      <div class="ctrl-col-divider"></div>
+
+      <!-- Right: Read Client -->
+      <div class="ctrl-col read-col">
+        <div class="ctrl-col-header">Read Client</div>
+        <div class="ctrl-row">
+          <div class="cg">
+            <label>Read concern</label>
+            <select id="sel-rc">
+              <option value="local">local</option>
+              <option value="available">available</option>
+              <option value="majority" selected>majority</option>
+              <option value="snapshot">snapshot</option>
+              <option value="linearizable">linearizable</option>
+            </select>
+          </div>
+          <div class="cg">
+            <label>Read preference</label>
+            <select id="sel-readpref">
+              <option value="primary" selected>primary</option>
+              <option value="primaryPreferred">primaryPreferred</option>
+              <option value="secondary">secondary</option>
+              <option value="secondaryPreferred">secondaryPreferred</option>
+            </select>
+          </div>
+        </div>
+        <div class="ctrl-row" style="align-items:center; gap:10px;">
+          <div class="cg">
+            <label>Read mode</label>
+            <div class="btn-group">
+              <button class="sec rmode-on" id="btn-rmode-auto" onclick="setReadMode('auto')">Auto</button>
+              <button class="sec"          id="btn-rmode-step" onclick="setReadMode('step')">Step</button>
+            </div>
+          </div>
+          <div class="btn-group" style="align-self:flex-end;">
+            <button class="read-btn" id="btn-read-start" onclick="handleRead()">Probe Read</button>
+            <button class="sec" id="btn-read-next" onclick="advanceReadStep()" disabled style="display:none">Next →</button>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /ctrl-cols -->
+
+    <!-- Bottom row: failure + reset -->
+    <div class="ctrl-row border-top">
+      <div class="cg" style="flex:1; min-width:150px;">
+        <label>Simulate failure</label>
+        <select id="sel-failure">
+          <option value="none">None</option>
+          <option value="s1down">S1 down</option>
+          <option value="s2down">S2 down</option>
+          <option value="bothdown">Both secondaries down</option>
+          <option value="pdown">Primary down</option>
+          <option value="partition">Network partition (P isolated)</option>
+        </select>
+      </div>
+      <div class="btn-group" style="align-self:flex-end;">
+        <button class="sec" id="btn-reset" onclick="resetScenario()">Reset ↺</button>
+      </div>
+    </div>
+
+  </div><!-- /controls -->
+
+  <!-- Two step panels side by side -->
+  <div class="step-panels">
+    <div class="step-panel write-step-panel hidden" id="write-step-panel">
+      <div class="step-meta">
+        <span class="step-label write-label">WRITE</span>
+        <span class="step-badge" id="write-step-badge">Step 1 of 5</span>
+        <div class="step-dots" id="write-step-dots"></div>
+      </div>
+      <div class="step-title"  id="write-step-title"></div>
+      <div class="step-explain" id="write-step-explain"></div>
+    </div>
+    <div class="step-panel read-step-panel hidden" id="read-step-panel">
+      <div class="step-meta">
+        <span class="step-label read-label">READ</span>
+        <span class="step-badge" id="read-step-badge">Step 1 of 3</span>
+        <div class="step-dots" id="read-step-dots"></div>
+      </div>
+      <div class="step-title"  id="read-step-title"></div>
+      <div class="step-explain" id="read-step-explain"></div>
+    </div>
+  </div>
+</div>
+
+<div class="card stage"><canvas id="canvas"></canvas></div>
+
+<div class="card log-panel">
+  <h2>Event log</h2>
+  <div id="log"></div>
+</div>
+
+<script>
+// ═══════════════════════════════════════
+// CONSTANTS
+// ═══════════════════════════════════════
+const PARTICLE_MS  = 1400;
+const AUTO_STEP_MS = 700;
+
+// ═══════════════════════════════════════
+// MONGODB ICONS  (Path2D)
+// ═══════════════════════════════════════
+// Leaf — simple-icons, viewBox 0 0 24 24
+const ICON_LEAF = new Path2D(
+  'M17.193 9.555c-1.264-5.58-4.252-7.414-4.573-8.115-.28-.394-.53-.954-.735-1.44' +
+  '-.036.495-.055.685-.523 1.184-.723.566-4.438 3.682-4.74 10.02' +
+  '-.282 5.912 4.27 9.435 4.888 9.884l.07.05A73.49 73.49 0 0111.91 24h.481' +
+  'c.114-1.032.284-2.056.51-3.07.417-.296.604-.463.85-.693' +
+  'a11.342 11.342 0 003.639-8.464c.01-.814-.103-1.662-.197-2.218z' +
+  'M11.857 17.75s0-8.291.275-8.29c.213 0 .49 10.695.49 10.695-.381-.045-.765-1.76-.765-2.405z'
+);
+// ReplicaSet topology — LeafyGreen, viewBox 0 0 16 16
+const ICON_RS = new Path2D(
+  'M9.39072 7.71281C8.96444 7.89758 8.49418 8 8 8C7.50582 8 7.03556 7.89758 6.60928 7.71281' +
+  'L5.26491 9.72938C5.719 10.182 6 10.8082 6 11.5C6 12.8807 4.88071 14 3.5 14' +
+  'C2.11929 14 1 12.8807 1 11.5C1 10.1193 2.11929 9 3.5 9C3.73768 9 3.96761 9.03317 4.18543 9.09513' +
+  'L5.56972 7.01868C4.91019 6.38216 4.5 5.48898 4.5 4.5C4.5 2.567 6.067 1 8 1' +
+  'C9.933 1 11.5 2.567 11.5 4.5C11.5 5.48898 11.0898 6.38216 10.4303 7.01868' +
+  'L11.8146 9.09513C12.0324 9.03317 12.2623 9 12.5 9C13.8807 9 15 10.1193 15 11.5' +
+  'C15 12.8807 13.8807 14 12.5 14C11.1193 14 10 12.8807 10 11.5' +
+  'C10 10.8082 10.281 10.182 10.7351 9.72938L9.39072 7.71281Z' +
+  'M9.75 4.5C9.75 5.4665 8.9665 6.25 8 6.25C7.0335 6.25 6.25 5.4665 6.25 4.5' +
+  'C6.25 3.5335 7.0335 2.75 8 2.75C8.9665 2.75 9.75 3.5335 9.75 4.5Z'
+);
+
+function drawIcon(path, cx, cy, size, color, viewSize = 16) {
+  const s = size / viewSize;
+  ctx.save();
+  ctx.translate(cx - size / 2, cy - size / 2);
+  ctx.scale(s, s);
+  ctx.fillStyle = color;
+  ctx.fill(path);
+  ctx.restore();
+}
+
+// ═══════════════════════════════════════
+// STATE
+// ═══════════════════════════════════════
+const state = {
+  nodes: {
+    primary: { label: 'Primary',     x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
+    s1:      { label: 'Secondary 1', x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
+    s2:      { label: 'Secondary 2', x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
+  },
+  writeClient: { x: 0, y: 0, phase: 'idle', lastWrittenVersion: 0 },
+  readClient:  { x: 0, y: 0, phase: 'idle', lastReceivedVersion: null },
+  particles: [],
+  doc: {
+    versions: [],        // [{ id, op:'insert'|'update', ackedBy: Set<nodeKey> }]
+    latestId: 0,         // id of most recently issued write (0 = nothing written yet)
+    majorityCommitId: 0, // highest id confirmed by ≥2 nodes
+  },
+};
+
+// ═══════════════════════════════════════
+// DOC STATE HELPERS
+// ═══════════════════════════════════════
+function resetDoc() {
+  state.doc.versions = [];
+  state.doc.latestId = 0;
+  state.doc.majorityCommitId = 0;
+  Object.values(state.nodes).forEach(n => { n.docVersionId = 0; });
+  state.writeClient.lastWrittenVersion = 0;
+  state.readClient.lastReceivedVersion = null;
+}
+
+function getServedVersion(nodeKey, rc) {
+  const node = state.nodes[nodeKey];
+  if (rc === 'local' || rc === 'available') {
+    const id = node.docVersionId;
+    return { id, dirty: id > 0 && id > state.doc.majorityCommitId };
+  }
+  // majority, linearizable, snapshot → majority-commit point
+  const id = state.doc.majorityCommitId;
+  return { id, dirty: false };
+}
+
+function advanceMajorityCommit() {
+  for (let i = state.doc.versions.length - 1; i >= 0; i--) {
+    const v = state.doc.versions[i];
+    if (v.ackedBy.size >= 2 && v.id > state.doc.majorityCommitId) {
+      state.doc.majorityCommitId = v.id;
+      break;
+    }
+  }
+}
+
+// ═══════════════════════════════════════
+// ENGINES
+// ═══════════════════════════════════════
+const writeEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false };
+const readEngine  = { mode: 'auto', steps: [], idx: -1, _waitResolve: null, busy: false, done: false };
+
+function setReadMode(m) {
+  readEngine.mode = m;
+  document.getElementById('btn-rmode-auto').classList.toggle('rmode-on', m === 'auto');
+  document.getElementById('btn-rmode-step').classList.toggle('rmode-on', m === 'step');
+  syncButtons();
+}
+
+function syncButtons() {
+  const we = writeEngine, re = readEngine;
+
+  // Write start
+  const btnWS = document.getElementById('btn-write-start');
+  btnWS.textContent = we.done ? 'New Write' : 'Start Write';
+  btnWS.disabled    = we.busy || (we.idx !== -1 && !we.done);
+
+  // Write next
+  const btnWN = document.getElementById('btn-write-next');
+  btnWN.disabled = we.busy || we._waitResolve === null;
+
+  // Read probe
+  const btnRS = document.getElementById('btn-read-start');
+  btnRS.textContent = re.done ? 'Probe Again' : 'Probe Read';
+  btnRS.disabled    = re.busy || (re.idx !== -1 && !re.done);
+
+  // Read next
+  const btnRN = document.getElementById('btn-read-next');
+  btnRN.style.display = re.mode === 'step' ? '' : 'none';
+  btnRN.disabled = re.busy || re._waitResolve === null;
+}
+
+function advanceWriteStep() {
+  if (writeEngine._waitResolve) { const r = writeEngine._waitResolve; writeEngine._waitResolve = null; r(); }
+}
+
+function advanceReadStep() {
+  if (readEngine._waitResolve) { const r = readEngine._waitResolve; readEngine._waitResolve = null; r(); }
+}
+
+async function waitForClick(eng) {
+  if (eng.mode === 'auto') return;
+  return new Promise(r => { eng._waitResolve = r; syncButtons(); });
+}
+
+function showStepPanel(i, eng, panelId) {
+  const panel = document.getElementById(panelId);
+  if (i < 0 || eng.steps.length === 0) { panel.classList.add('hidden'); return; }
+  panel.classList.remove('hidden');
+  const s = eng.steps[i];
+  // Sub-element IDs use prefix without '-panel' suffix: 'write-step-panel' → 'write-step'
+  const prefix = panelId.replace(/-panel$/, '');
+  document.getElementById(prefix + '-badge').textContent  = `Step ${i+1} of ${eng.steps.length}`;
+  document.getElementById(prefix + '-title').textContent  = s.title;
+  document.getElementById(prefix + '-explain').innerHTML  = s.explain;
+  const dotsEl = document.getElementById(prefix + '-dots');
+  dotsEl.innerHTML = '';
+  eng.steps.forEach((_, j) => {
+    const d = document.createElement('div');
+    d.className = 'step-dot' + (j < i ? ' done' : j === i ? ' current' : '');
+    dotsEl.appendChild(d);
+  });
+}
+
+async function runEngine(steps, eng, panelId) {
+  eng.steps = steps; eng.idx = -1; eng.done = false; eng.busy = false;
+  for (let i = 0; i < steps.length; i++) {
+    eng.idx = i;
+    showStepPanel(i, eng, panelId);
+    syncButtons();
+    await waitForClick(eng);
+    eng.busy = true; syncButtons();
+    log(`▶ ${steps[i].title}`, 'info');
+    await steps[i].run();
+    eng.busy = false;
+    if (eng.mode === 'auto' && i < steps.length - 1) await delay(AUTO_STEP_MS);
+  }
+  eng.done = true;
+  showStepPanel(steps.length - 1, eng, panelId);
+  syncButtons();
+}
+
+// ═══════════════════════════════════════
+// FAILURE + CONCERN LOGIC
+// ═══════════════════════════════════════
+function applyFailure(f) {
+  Object.values(state.nodes).forEach(n => { n.alive = true; n.phase = 'idle'; });
+  if (f === 's1down')    state.nodes.s1.alive = false;
+  if (f === 's2down')    state.nodes.s2.alive = false;
+  if (f === 'bothdown')  { state.nodes.s1.alive = false; state.nodes.s2.alive = false; }
+  if (f === 'pdown')     state.nodes.primary.alive = false;
+  if (f === 'partition') { state.nodes.s1.alive = false; state.nodes.s2.alive = false; }
+}
+
+function resolveW(raw) { return raw === 'majority' ? 'majority' : parseInt(raw, 10); }
+
+function requiredAckers(w) {
+  const alive = ['primary','s1','s2'].filter(k => state.nodes[k].alive);
+  if (w === 0) return [];
+  if (w === 1) return alive.slice(0, 1);
+  if (w === 'majority') return alive.slice(0, 2);
+  return alive.slice(0, Math.min(w, alive.length));
+}
+function canAchieve(w) {
+  if (w === 0) return true;
+  return Object.values(state.nodes).filter(n => n.alive).length >= (w === 'majority' ? 2 : w);
+}
+
+function resolveReadTarget(rc, readPref) {
+  if (rc === 'linearizable') return 'primary';
+  if (readPref === 'primary')
+    return state.nodes.primary.alive ? 'primary' : null;
+  if (readPref === 'primaryPreferred') {
+    if (state.nodes.primary.alive) return 'primary';
+    return ['s2','s1'].find(k => state.nodes[k].alive) || null;
+  }
+  if (readPref === 'secondary')
+    return ['s2','s1'].find(k => state.nodes[k].alive) || null;
+  if (readPref === 'secondaryPreferred') {
+    const s = ['s2','s1'].find(k => state.nodes[k].alive);
+    return s || (state.nodes.primary.alive ? 'primary' : null);
+  }
+  return 'primary';
+}
+
+// ═══════════════════════════════════════
+// BUILD WRITE STEPS
+// ═══════════════════════════════════════
+function buildWriteSteps(w, j, wtimeout) {
+  const achievable = canAchieve(w);
+  const ackers     = requiredAckers(w);
+  const aliveSecs  = ['s1','s2'].filter(k => state.nodes[k].alive);
+  const secAckers  = ackers.filter(k => k !== 'primary');
+  const aliveCount = Object.values(state.nodes).filter(n => n.alive).length;
+  const needCount  = w === 'majority' ? 2 : w === 0 ? 0 : w;
+
+  // Determine upcoming version at build time (mutations happen inside run())
+  const nextId = state.doc.latestId + 1;
+  const op     = state.doc.latestId === 0 ? 'insert' : 'update';
+  const opLabel = `${op} _id:1 → v${nextId}`;
+
+  const steps = [];
+
+  steps.push({
+    title: `Write Client sends ${opLabel}`,
+    explain: `<strong>All MongoDB writes go to the primary.</strong> The write client dispatches <strong>${opLabel}</strong> with ` +
+      `<strong>w:${w}${j ? ', j:true' : ''}</strong>. Write concern controls when the primary sends the acknowledgment back — ` +
+      `it does not prevent the write from being applied immediately.`,
+    run: () => {
+      const entry = { id: nextId, op, ackedBy: new Set() };
+      state.doc.versions.push(entry);
+      state.doc.latestId = nextId;
+      state.writeClient.lastWrittenVersion = nextId;
+      return awaitParticle(state.writeClient, state.nodes.primary, '#F5A623', op === 'insert' ? 'INS' : 'UPD', () => {
+        state.nodes.primary.phase = 'active';
+        state.writeClient.phase = 'waiting';
+        log(`Write received by primary (${opLabel}).`, 'info');
+      });
+    },
+  });
+
+  if (!state.nodes.primary.alive) {
+    steps.push({
+      title: 'No primary — write fails',
+      explain: `The primary is down. MongoDB needs a primary to accept writes. With ${aliveCount} node(s) alive, no election is possible (majority = 2). <strong>Write fails immediately.</strong>`,
+      run: async () => { state.writeClient.phase = 'error'; log('Write failed — no primary.', 'err'); draw(); },
+    });
+    return steps;
+  }
+
+  steps.push({
+    title: `Primary applies ${opLabel}${j ? ' + journal flush' : ' in-memory'}`,
+    explain: j
+      ? `Primary appends to its oplog and <strong>flushes the on-disk journal</strong> before acknowledging. The write (<strong>${opLabel}</strong>) survives a crash of this node even before replication. Node shows <strong>amber ◎</strong> until a majority confirms it.`
+      : `Primary applies <strong>${opLabel}</strong> to its <strong>WiredTiger in-memory cache</strong> and appends to the oplog. No journal flush yet — fast, but not crash-safe until journaled. Node shows <strong>amber ◎</strong> until majority-committed.`,
+    run: async () => {
+      const entry = state.doc.versions.find(v => v.id === nextId);
+      if (entry) { entry.ackedBy.add('primary'); }
+      state.nodes.primary.docVersionId = nextId;
+      advanceMajorityCommit();
+      if (j) { await delay(500); log('Primary: journal flushed.', 'info'); }
+      state.nodes.primary.phase = w === 0 ? 'acked' : 'active';
+      draw();
+    },
+  });
+
+  if (w === 0) {
+    steps.push({
+      title: 'Fire-and-forget (w:0) — no ACK',
+      explain: `<strong>w:0</strong>: the client gets no acknowledgment. The write (<strong>${opLabel}</strong>) may succeed or fail — the client will never know. Async replication to secondaries proceeds normally. Primary node shows <strong>amber ◎</strong> until secondaries confirm.`,
+      run: async () => {
+        aliveSecs.forEach((k, i) => setTimeout(() =>
+          awaitParticle(state.nodes.primary, state.nodes[k], '#4A90D9', 'oplog', () => {
+            state.nodes[k].docVersionId = nextId;
+            const entry = state.doc.versions.find(v => v.id === nextId);
+            if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
+            state.nodes[k].phase = 'active';
+          }),
+        i * 100));
+        startAnimLoop();
+        log(`w:0 — no ACK. ${opLabel} async replication proceeds.`, 'warn');
+        state.writeClient.phase = 'idle';
+        draw();
+      },
+    });
+    return steps;
+  }
+
+  if (aliveSecs.length > 0) {
+    steps.push({
+      title: `Oplog replicates ${opLabel} to Secondaries`,
+      explain: `Secondaries <strong>tail the primary's oplog</strong> continuously — this always happens regardless of write concern. ` +
+        (secAckers.length > 0
+          ? `With <strong>w:${w}</strong>, the primary <em>waits</em> for ${secAckers.length} secondar${secAckers.length > 1 ? 'ies' : 'y'} to acknowledge before responding. Secondary nodes turn <strong>amber ◎</strong> once they apply the write.`
+          : `With <strong>w:1</strong>, the primary does <em>not</em> wait for secondaries. Replication is purely async. Once a secondary applies the write, majority-commit may advance.`),
+      run: () => Promise.all(aliveSecs.map(k =>
+        awaitParticle(state.nodes.primary, state.nodes[k], '#4A90D9', 'oplog', () => {
+          state.nodes[k].docVersionId = nextId;
+          const entry = state.doc.versions.find(v => v.id === nextId);
+          if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
+          state.nodes[k].phase = 'active';
+          log(`${state.nodes[k].label}: oplog received (v${nextId}).`, 'info');
+        })
+      )),
+    });
+  }
+
+  if (secAckers.length > 0 && achievable) {
+    steps.push({
+      title: `Secondar${secAckers.length > 1 ? 'ies' : 'y'} acknowledge — majority-commit advances`,
+      explain: `Waiting for ${secAckers.length} secondar${secAckers.length > 1 ? 'ies' : 'y'} to confirm <strong>${opLabel}</strong>. ` +
+        (j ? `<strong>j:true</strong> — each secondary must flush to journal first. Durable on majority. Nodes turn <strong>green ◉</strong> when majority-committed.`
+           : `<strong>j:false</strong> — secondary acknowledges after in-memory apply. Faster, but not disk-safe until the next journal cycle. Nodes turn <strong>green ◉</strong> when majority-committed.`),
+      run: async () => {
+        await delay(j ? 500 : 250);
+        secAckers.forEach(k => {
+          state.nodes[k].phase = 'acked';
+          const entry = state.doc.versions.find(v => v.id === nextId);
+          if (entry) { entry.ackedBy.add(k); }
+          log(`${state.nodes[k].label}: acked (v${nextId}).`, 'ok');
+        });
+        advanceMajorityCommit();
+        draw();
+      },
+    });
+  }
+
+  if (!achievable) {
+    steps.push({
+      title: 'Write concern cannot be satisfied',
+      explain: `<strong>w:${w}</strong> needs ${needCount} node(s), but only ${aliveCount} alive. ` +
+        (wtimeout > 0 ? `After <strong>${wtimeout}ms</strong>, MongoDB returns a write concern error. ` : `With <strong>wtimeout:0</strong> this blocks indefinitely. `) +
+        `<strong>The write (${opLabel}) is NOT rolled back</strong> — it is already on the primary (amber ◎). It will eventually replicate, or roll back only if the primary fails before reaching majority.`,
+      run: async () => {
+        if (wtimeout > 0) await delay(Math.min(wtimeout, 1200));
+        state.nodes.primary.phase = 'error'; state.writeClient.phase = 'error';
+        await awaitParticle(state.nodes.primary, state.writeClient, '#FF6B6B', 'ERR', () => {});
+        log(`Write concern error — w:${w} unachievable. ${opLabel} sits on primary (amber).`, 'err');
+      },
+    });
+  } else {
+    steps.push({
+      title: `ACK returned — ${opLabel} committed`,
+      explain: `All required acknowledgments collected for <strong>w:${w}${j ? ', j:true' : ''}</strong>. ` +
+        (w === 'majority' && j
+          ? `<strong>Fully durable.</strong> v${nextId} is majority-committed — nodes show <strong>green ◉</strong>. Survives crash of any minority of nodes.`
+          : w === 'majority'
+          ? `v${nextId} is majority-committed (green ◉). Survives failover but <strong>j:false means a majority crash before journal flush could lose this write.</strong>`
+          : `Acked by ${ackers.length} node(s). v${nextId} sits on primary only — <strong>rollback risk</strong> if primary steps down before further replication. Nodes show amber ◎.`),
+      run: async () => {
+        state.nodes.primary.phase = 'acked';
+        await awaitParticle(state.nodes.primary, state.writeClient, '#00ED64', 'ACK', () => {
+          state.writeClient.phase = 'received';
+        });
+        log(`ACK — w:${w}${j ? ', j:true' : ''} satisfied. ${opLabel} done.`, 'ok');
+      },
+    });
+  }
+  return steps;
+}
+
+// ═══════════════════════════════════════
+// BUILD READ STEPS
+// ═══════════════════════════════════════
+function buildReadSteps(rc, readPref) {
+  const steps      = [];
+  const targetKey  = resolveReadTarget(rc, readPref);
+  const target     = targetKey ? state.nodes[targetKey] : null;
+  const aliveCount = Object.values(state.nodes).filter(n => n.alive).length;
+  const majorityOk = aliveCount >= 2;
+
+  // Pre-compute what this read will serve (at build time = snapshot of current state)
+  const served  = targetKey && target && target.alive ? getServedVersion(targetKey, rc) : { id: 0, dirty: false };
+  const vLabel  = served.id > 0 ? `v${served.id}` : 'none';
+  const isDirty = served.dirty;
+
+  const rcNote = {
+    local:        `<strong>rc:local</strong> — reads node's current in-memory state. No coordination, lowest latency. May include data not yet majority-committed (dirty read risk).`,
+    available:    `<strong>rc:available</strong> — behaves like rc:local on replica sets. (On sharded clusters it can return orphaned documents from migrations.)`,
+    majority:     `<strong>rc:majority</strong> — reads only data at the majority-commit point (currently <strong>v${state.doc.majorityCommitId > 0 ? state.doc.majorityCommitId : 'none'}</strong>). Data returned will never be rolled back.`,
+    snapshot:     `<strong>rc:snapshot</strong> — returns a consistent point-in-time snapshot of majority-committed data (currently <strong>v${state.doc.majorityCommitId > 0 ? state.doc.majorityCommitId : 'none'}</strong>). Primarily for multi-document transactions.`,
+    linearizable: `<strong>rc:linearizable</strong> — strongest guarantee. Primary must confirm it can still complete w:majority writes before serving the read. Ensures real-time order. Always use maxTimeMS.`,
+  };
+
+  // ── 1. Issue read ──
+  steps.push({
+    title: `Read Client requests doc #1 (${vLabel} expected)`,
+    explain: `Read issued with <strong>rc:${rc}</strong> to <strong>${readPrefLabel(readPref)}</strong>. ` + rcNote[rc] +
+      (rc === 'linearizable' && readPref !== 'primary' ? ` <strong>rc:linearizable forces the target to the primary</strong>, regardless of readPreference.` : ``),
+    run: async () => {
+      state.readClient.phase = 'waiting';
+      if (!target || !target.alive) {
+        state.readClient.phase = 'error';
+        log(`No ${readPref} node available.`, 'err');
+        draw(); return;
+      }
+      await awaitParticle(state.readClient, target, '#7EC8E3', 'read?', () => {
+        target.phase = 'reading';
+        log(`Read arrived at ${target.label} (rc:${rc}, node holds v${target.docVersionId || 'none'}).`, 'info');
+      });
+    },
+  });
+
+  // ── no target ──
+  if (!target || !target.alive) {
+    steps.push({
+      title: 'No eligible node — read fails',
+      explain: `readPreference:<strong>${readPref}</strong> found no eligible alive node. ` +
+        (readPref === 'primary' ? `Primary is down.` : `No secondaries alive.`) +
+        ` MongoDB throws a connection error to the client.`,
+      run: async () => { state.readClient.phase = 'error'; log('Read failed — no eligible node.', 'err'); draw(); },
+    });
+    return steps;
+  }
+
+  // ── rc-specific ──
+  if (rc === 'local' || rc === 'available') {
+    const nodeVer = target.docVersionId;
+    const nodeLabel = nodeVer > 0 ? `v${nodeVer}` : 'none';
+    const dirty = nodeVer > 0 && nodeVer > state.doc.majorityCommitId;
+    steps.push({
+      title: `Node reads local state → ${nodeLabel}${dirty ? ' ⚠ (dirty)' : nodeVer > 0 ? ' ✓' : ''}`,
+      explain: targetKey !== 'primary'
+        ? `The secondary returns whatever it has in memory — <strong>no waiting, no coordination</strong>. This node holds <strong>${nodeLabel}</strong>${dirty ? `, which is <strong>above majority-commit v${state.doc.majorityCommitId}</strong> — this is a dirty read. If the primary fails now, this write could roll back` : state.doc.majorityCommitId > 0 ? `, majority-committed at v${state.doc.majorityCommitId}` : ''}.`
+        : `The primary returns its latest in-memory state: <strong>${nodeLabel}</strong>${dirty ? `. Above majority-commit v${state.doc.majorityCommitId} — dirty read risk if primary crashes before reaching majority` : ''}.`,
+      run: async () => {
+        await delay(250);
+        target.phase = 'serving';
+        log(`${target.label}: serving rc:${rc} → ${nodeLabel}${dirty ? ' (dirty)' : ''}.`, dirty ? 'warn' : 'info');
+        draw();
+      },
+    });
+
+  } else if (rc === 'majority') {
+    if (!majorityOk) {
+      steps.push({
+        title: 'Majority-commit point is frozen',
+        explain: `With only <strong>${aliveCount} node alive</strong>, the majority-commit point cannot advance — a write needs 2 acks to commit, which is impossible. ` +
+          `<strong>Non-causal reads</strong> still return the last frozen majority-commit snapshot (stale but safe). <strong>Causal session reads</strong> (afterClusterTime) will block indefinitely until the node can reach the target time.`,
+        run: async () => { target.phase = 'error'; log(`rc:majority — majority-commit frozen at v${state.doc.majorityCommitId}.`, 'warn'); draw(); },
+      });
+      const frozenLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
+      steps.push({
+        title: `Returns frozen majority snapshot → ${frozenLabel}`,
+        explain: `The node returns its last majority-commit snapshot: <strong>${frozenLabel}</strong>. This data is <strong>rollback-safe</strong> but may be arbitrarily stale — it reflects the last moment when a majority of nodes acknowledged. Under prolonged isolation this could be minutes or hours old.`,
+        run: async () => {
+          target.phase = 'serving';
+          await awaitParticle(target, state.readClient, '#F5A623', frozenLabel, () => {
+            state.readClient.phase = 'received';
+            state.readClient.lastReceivedVersion = { id: state.doc.majorityCommitId, dirty: false };
+          });
+          log(`Read returned frozen majority snapshot: ${frozenLabel}. Stale but safe from rollback.`, 'warn');
+        },
+      });
+      return steps;
+    }
+    const mcLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
+    steps.push({
+      title: `Node reads majority-commit snapshot → ${mcLabel}`,
+      explain: `The node reads from its <strong>in-memory majority-commit point</strong> — the highest oplog entry confirmed by a majority of nodes: <strong>${mcLabel}</strong>. ` +
+        (targetKey !== 'primary'
+          ? `On this <strong>secondary</strong>, the majority-commit snapshot may lag the primary's by the replication delay. This is <strong>bounded staleness with zero rollback risk</strong>.`
+          : `On the <strong>primary</strong>, this is the most current majority-safe view. No rollback risk.`),
+      run: async () => {
+        await delay(350);
+        target.phase = 'serving';
+        log(`${target.label}: reading majority-commit snapshot (${mcLabel}).`, 'info');
+        draw();
+      },
+    });
+
+  } else if (rc === 'linearizable') {
+    const liveSecs = ['s1','s2'].filter(k => state.nodes[k].alive);
+    steps.push({
+      title: 'Primary checks leadership with secondaries',
+      explain: `<strong>rc:linearizable</strong> requires the primary to confirm it can still complete <strong>w:majority</strong> writes before serving the read. It does this by verifying replication with secondaries. ` +
+        `This prevents a <strong>split-brain scenario</strong> where a stale primary (unaware it was demoted) would otherwise serve outdated data with full confidence.`,
+      run: async () => {
+        if (liveSecs.length === 0) { await delay(300); return; }
+        await Promise.all(liveSecs.map(k =>
+          awaitParticle(target, state.nodes[k], '#7EC8E3', 'check', () => { state.nodes[k].phase = 'reading'; })
+            .then(() => delay(250))
+            .then(() => awaitParticle(state.nodes[k], target, '#00ED64', 'ok', () => { state.nodes[k].phase = 'serving'; }))
+        ));
+      },
+    });
+    if (!majorityOk) {
+      steps.push({
+        title: 'Cannot confirm leadership — read blocks',
+        explain: `With only ${aliveCount} node alive the primary cannot get enough responses to confirm w:majority capability. <strong>The read blocks.</strong> ` +
+          `This is intentional safety: serving a read in this state could mean serving stale data from a demoted primary. ` +
+          `<strong>Always set maxTimeMS with rc:linearizable</strong> to return an error instead of hanging.`,
+        run: async () => {
+          target.phase = 'error'; state.readClient.phase = 'error';
+          log('rc:linearizable blocked — primary cannot confirm leadership.', 'err'); draw();
+        },
+      });
+      return steps;
+    }
+    const linLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
+    steps.push({
+      title: `Leadership confirmed — serving ${linLabel} with real-time order`,
+      explain: `Primary confirmed as the legitimate current primary. The read will return <strong>${linLabel}</strong> — reflecting every majority-acknowledged write completed before this read. ` +
+        `Combined with w:majority writes on the same primary, this provides <strong>linearizable consistency</strong> — reads and writes behave as if executed by a single thread in real time.`,
+      run: async () => {
+        await delay(300);
+        target.phase = 'serving';
+        log(`Primary confirmed. rc:linearizable serving ${linLabel}.`, 'info'); draw();
+      },
+    });
+
+  } else if (rc === 'snapshot') {
+    const snapLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
+    steps.push({
+      title: `Node prepares point-in-time snapshot → ${snapLabel}`,
+      explain: `<strong>rc:snapshot</strong> captures a <strong>consistent point-in-time snapshot</strong> of majority-committed data: <strong>${snapLabel}</strong>. Unlike rc:majority which reads from a rolling commit point, snapshot provides an atomic view at a fixed timestamp. ` +
+        `All reads within a transaction using rc:snapshot see the exact same data state — no phantom reads, no non-repeatable reads.`,
+      run: async () => {
+        await delay(400);
+        target.phase = 'serving';
+        log(`${target.label}: point-in-time snapshot ready → ${snapLabel}.`, 'info'); draw();
+      },
+    });
+  }
+
+  // ── return data ──
+  const isBlocked = (rc === 'linearizable' && !majorityOk);
+  if (!isBlocked) {
+    const color = isDirty ? '#F5A623' : served.id > 0 ? '#00ED64' : '#3D5570';
+    const suffix = isDirty ? ' \u26A0' : served.id > 0 ? ' \u2713' : '';
+    steps.push({
+      title: `Data returned → ${vLabel}${suffix}`,
+      explain: state.doc.latestId === 0
+        ? `No writes have been issued yet — doc #1 does not exist. The read returns <strong>nothing</strong>. Try issuing a write first.`
+        : isDirty
+        ? `The node sends <strong>${vLabel}</strong> (node's local v${served.id} > majority-commit v${state.doc.majorityCommitId}). With <strong>rc:${rc}</strong>, this data <strong>may include uncommitted writes</strong>. If the primary fails before these writes reach majority, they roll back — and your client already saw them.`
+        : rc === 'linearizable'
+        ? `Result returned: <strong>${vLabel} ✓</strong>. With <strong>rc:linearizable</strong> this data reflects every majority-acknowledged write up to this moment — the strongest possible read guarantee in MongoDB.`
+        : served.id === 0
+        ? `Majority-commit point is at v0 — no write has been majority-committed yet. rc:${rc} returns <strong>nothing</strong>. The latest write (v${state.doc.latestId}) is on the primary but not yet majority-acknowledged.`
+        : `Result returned: <strong>${vLabel} ✓</strong>. With <strong>rc:${rc}</strong> this data is <strong>guaranteed safe from rollback</strong> — confirmed by a majority at v${state.doc.majorityCommitId}.`,
+      run: async () => {
+        await awaitParticle(target, state.readClient, color, vLabel, () => {
+          state.readClient.phase = 'received';
+          state.readClient.lastReceivedVersion = { id: served.id, dirty: isDirty };
+          log(`Read complete (rc:${rc}): ${vLabel}${isDirty ? ' ⚠ (dirty)' : served.id > 0 ? ' ✓' : ' (none)'}`, isDirty ? 'warn' : 'ok');
+        });
+      },
+    });
+  }
+  return steps;
+}
+
+function readPrefLabel(p) {
+  return { primary:'Primary', primaryPreferred:'Primary (preferred)', secondary:'Secondary', secondaryPreferred:'Secondary (preferred)' }[p] || p;
+}
+
+// ═══════════════════════════════════════
+// MAIN ACTIONS
+// ═══════════════════════════════════════
+function handleWrite() {
+  if (writeEngine.busy || (writeEngine.idx !== -1 && !writeEngine.done)) return;
+  resetWriteVisual();
+  const failure = document.getElementById('sel-failure').value;
+  applyFailure(failure);
+  draw();
+  const w  = resolveW(document.getElementById('sel-w').value);
+  const j  = document.getElementById('sel-j').value === 'true';
+  const wt = parseInt(document.getElementById('inp-wtimeout').value) || 0;
+  log(`─── Write: w:${w}, j:${j}, wtimeout:${wt}, failure:${failure} ───`, 'info');
+  runEngine(buildWriteSteps(w, j, wt), writeEngine, 'write-step-panel');
+}
+
+function handleRead() {
+  if (readEngine.busy || (readEngine.idx !== -1 && !readEngine.done)) return;
+  resetReadVisual();
+  draw();
+  const rc       = document.getElementById('sel-rc').value;
+  const readPref = document.getElementById('sel-readpref').value;
+  const failure  = document.getElementById('sel-failure').value;
+  log(`─── Read: rc:${rc}, readPref:${readPref}, failure:${failure} ───`, 'info');
+  runEngine(buildReadSteps(rc, readPref), readEngine, 'read-step-panel');
+}
+
+function resetWriteVisual() {
+  state.particles = [];
+  Object.values(state.nodes).forEach(n => { n.phase = 'idle'; });
+  state.writeClient.phase = 'idle';
+  document.getElementById('write-step-panel').classList.add('hidden');
+  writeEngine.done = false; writeEngine.idx = -1;
+  writeEngine._waitResolve = null; writeEngine.busy = false; writeEngine.steps = [];
+}
+
+function resetReadVisual() {
+  state.particles = [];
+  state.readClient.phase = 'idle';
+  document.getElementById('read-step-panel').classList.add('hidden');
+  readEngine.done = false; readEngine.idx = -1;
+  readEngine._waitResolve = null; readEngine.busy = false; readEngine.steps = [];
+}
+
+function resetScenario() {
+  resetWriteVisual();
+  resetReadVisual();
+  resetDoc();
+  const failure = document.getElementById('sel-failure').value;
+  applyFailure(failure);
+  draw();
+  syncButtons();
+  log('Scenario reset — document state cleared (v0).', 'info');
+}
+
+// ═══════════════════════════════════════
+// ANIMATION
+// ═══════════════════════════════════════
+function awaitParticle(from, to, color, label, onArrive) {
+  return new Promise(resolve => {
+    state.particles.push({
+      sx: from.x, sy: from.y, tx: to.x, ty: to.y,
+      x: from.x,  y: from.y, progress: 0, color, label,
+      onArrive: () => { if (onArrive) onArrive(); resolve(); },
+    });
+    startAnimLoop();
+  });
+}
+
+function ease(t) { return t < 0.5 ? 2*t*t : -1+(4-2*t)*t; }
+
+let animRunning = false, lastT = null;
+function startAnimLoop() {
+  if (animRunning) return;
+  animRunning = true; lastT = null;
+  requestAnimationFrame(function loop(ts) {
+    if (!lastT) lastT = ts;
+    const dt = Math.min(ts - lastT, 50); lastT = ts;
+    state.particles.forEach(p => {
+      p.progress = Math.min(1, p.progress + dt / PARTICLE_MS);
+      p.x = p.sx + (p.tx - p.sx) * ease(p.progress);
+      p.y = p.sy + (p.ty - p.sy) * ease(p.progress);
+    });
+    state.particles.filter(p => p.progress >= 1 && p.onArrive).forEach(p => { p.onArrive(); p.onArrive = null; });
+    state.particles = state.particles.filter(p => p.progress < 1);
+    draw();
+    if (state.particles.length > 0) requestAnimationFrame(loop);
+    else { animRunning = false; draw(); }
+  });
+}
+
+// ═══════════════════════════════════════
+// LAYOUT
+// ═══════════════════════════════════════
+function computeLayout(W, H) {
+  const cx = W / 2;
+  const topY  = 68;
+  const nodeY = H - 100;
+  const spread = Math.min(230, W * 0.26);
+
+  state.writeClient.x = cx - spread; state.writeClient.y = topY;
+  state.readClient.x  = cx + spread; state.readClient.y  = topY;
+
+  state.nodes.primary.x = cx;          state.nodes.primary.y = nodeY;
+  state.nodes.s1.x      = cx - spread; state.nodes.s1.y      = nodeY;
+  state.nodes.s2.x      = cx + spread; state.nodes.s2.y      = nodeY;
+}
+
+// ═══════════════════════════════════════
+// DRAW
+// ═══════════════════════════════════════
+const canvas = document.getElementById('canvas');
+const ctx    = canvas.getContext('2d');
+const NR = 40, CR = 26;
+
+function resizeCanvas() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width  = rect.width  * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  computeLayout(rect.width, rect.height);
+  draw();
+}
+
+const PHASE_FILL   = { idle:'#182535', active:'#0D2820', acked:'#0A2010', error:'#2A0E0E', reading:'#0A1E30', serving:'#0A2018', waiting:'#182535', received:'#0A2010' };
+const PHASE_STROKE = { idle:null,      active:'#00ED64', acked:'#00ED64', error:'#FF6B6B', reading:'#7EC8E3', serving:'#00ED64' };
+
+function draw() {
+  const W = canvas.getBoundingClientRect().width;
+  const H = canvas.getBoundingClientRect().height;
+  ctx.clearRect(0, 0, W, H);
+
+  drawRSBox();
+  drawReplicationLinks();
+  drawWriteClientLine();
+  drawReadClientLine();
+  drawNode(state.nodes.s1,      'secondary');
+  drawNode(state.nodes.s2,      'secondary');
+  drawNode(state.nodes.primary, 'primary');
+  drawWriteClient();
+  drawReadClient();
+  drawDocLedger();
+  drawParticles();
+}
+
+function drawDocLedger() {
+  const { latestId, majorityCommitId } = state.doc;
+  const cx   = state.nodes.primary.x;
+  const midY = (state.writeClient.y + state.nodes.primary.y) / 2;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+
+  if (latestId === 0) {
+    ctx.fillStyle = '#263848'; ctx.font = '11px system-ui';
+    ctx.fillText('doc #1  ·  no writes yet', cx, midY);
+    ctx.restore(); return;
+  }
+
+  const twoRows = latestId > majorityCommitId;
+  const boxW = 240, boxH = twoRows ? 58 : 40;
+  const bx = cx - boxW / 2, by = midY - boxH / 2;
+
+  ctx.fillStyle = '#0D1F30';
+  ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.fill();
+  ctx.strokeStyle = twoRows ? '#F5A623' : '#00ED64';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.stroke();
+
+  ctx.fillStyle = '#3D5A70'; ctx.font = '8px system-ui';
+  ctx.fillText('doc #1', cx, by + 12);
+
+  if (!twoRows) {
+    ctx.fillStyle = '#00ED64'; ctx.font = 'bold 15px system-ui';
+    ctx.fillText(`v${latestId}  \u25C9  durable`, cx, by + 32);
+  } else {
+    const commLabel = majorityCommitId > 0 ? `v${majorityCommitId}` : 'none';
+    ctx.font = '11px system-ui';
+    ctx.fillStyle = '#00ED64';
+    ctx.fillText(`committed  ${commLabel}  \u25C9  durable`, cx, by + 28);
+    ctx.fillStyle = '#F5A623';
+    ctx.fillText(`latest  v${latestId}  \u25CE  in-flight`, cx, by + 46);
+  }
+
+  ctx.restore();
+}
+
+function drawRSBox() {
+  const pad = 32;
+  const xs  = [state.nodes.s1.x, state.nodes.primary.x, state.nodes.s2.x];
+  const bx  = Math.min(...xs) - NR - pad;
+  const bw  = Math.max(...xs) + NR + pad - bx;
+  const by  = state.nodes.primary.y - NR - 20;
+  const bh  = NR * 2 + 50;
+  ctx.save();
+  ctx.strokeStyle = '#26384A'; ctx.lineWidth = 1.5; ctx.setLineDash([6,4]);
+  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.stroke();
+  ctx.setLineDash([]);
+  const isz = 13, ix = bx+12+isz/2, iy = by+8+isz/2;
+  drawIcon(ICON_RS, ix, iy, isz, '#3D5A70');
+  ctx.fillStyle = '#3D5A70'; ctx.font = '11px system-ui'; ctx.textAlign = 'left';
+  ctx.fillText('Replica Set  ·  3-node P-S-S  ·  majority = 2', bx+12+isz+5, by+15);
+  ctx.restore();
+}
+
+function drawReplicationLinks() {
+  const p = state.nodes.primary;
+  ['s1','s2'].forEach(k => {
+    const s = state.nodes[k];
+    ctx.save();
+    ctx.strokeStyle = s.alive ? '#2A4055' : '#1E2A35';
+    ctx.lineWidth = 1.5; ctx.setLineDash([4,5]);
+    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(s.x, s.y); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.restore();
+  });
+}
+
+function drawWriteClientLine() {
+  const p = state.nodes.primary;
+  ctx.save();
+  ctx.strokeStyle = '#3A5A2A'; ctx.lineWidth = 1; ctx.setLineDash([3,4]);
+  ctx.beginPath();
+  ctx.moveTo(state.writeClient.x, state.writeClient.y + CR);
+  ctx.lineTo(p.x, p.y - NR);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawReadClientLine() {
+  const rc       = document.getElementById('sel-rc')?.value || 'majority';
+  const readPref = document.getElementById('sel-readpref')?.value || 'primary';
+  const tKey     = resolveReadTarget(rc, readPref);
+  if (!tKey) return;
+  const t = state.nodes[tKey];
+  ctx.save();
+  ctx.strokeStyle = t.alive ? '#2A4A5A' : '#1E2A35';
+  ctx.lineWidth = 1; ctx.setLineDash([3,4]);
+  ctx.beginPath();
+  ctx.moveTo(state.readClient.x, state.readClient.y + CR);
+  ctx.lineTo(t.x, t.y - NR);
+  ctx.stroke(); ctx.setLineDash([]);
+  ctx.restore();
+}
+
+function drawNode(node, role) {
+  ctx.save();
+  if (!node.alive) ctx.globalAlpha = 0.22;
+  const defStroke = role === 'primary' ? '#C87A10' : '#3A70A0';
+  const stroke    = PHASE_STROKE[node.phase] || defStroke;
+  ctx.beginPath(); ctx.arc(node.x, node.y, NR, 0, Math.PI*2);
+  ctx.fillStyle = PHASE_FILL[node.phase] || PHASE_FILL.idle; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = node.phase !== 'idle' ? 2.5 : 1.5; ctx.stroke();
+
+  const leafColor =
+    !node.alive             ? '#2A3D50' :
+    node.phase === 'acked'  ? '#00ED64' :
+    node.phase === 'serving'? '#00ED64' :
+    node.phase === 'active' ? '#4DCC90' :
+    node.phase === 'reading'? '#7EC8E3' :
+    node.phase === 'error'  ? '#FF6B6B' :
+    role === 'primary'      ? '#C87A10' : '#4A90D9';
+  drawIcon(ICON_LEAF, node.x, node.y - 16, 24, leafColor, 24);
+  drawNodeDocBadge(node);
+
+  ctx.fillStyle = '#D8E8F3'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText(node.label, node.x, node.y + 24);
+  const badge = node.alive ? node.phase : 'DOWN';
+  ctx.fillStyle = !node.alive ? '#FF6B6B' : node.phase === 'acked' || node.phase === 'serving' ? '#00ED64' : node.phase === 'error' ? '#FF6B6B' : '#3D5570';
+  ctx.font = '9px system-ui';
+  ctx.fillText(badge, node.x, node.y + 35);
+  ctx.restore();
+}
+
+function drawNodeDocBadge(node) {
+  if (state.doc.latestId === 0) return;
+  const vid = node.docVersionId;
+  let vText, color;
+  if (vid === 0) {
+    vText = 'none  —'; color = '#3D5570';
+  } else if (vid <= state.doc.majorityCommitId) {
+    vText = `v${vid}  \u25C9`; color = '#00ED64';   // ◉ committed
+  } else {
+    vText = `v${vid}  \u25CE`; color = '#F5A623';   // ◎ dirty
+  }
+  ctx.fillStyle = '#3D5570'; ctx.font = '7px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText('doc #1', node.x, node.y + 2);
+  ctx.fillStyle = color; ctx.font = 'bold 9px system-ui';
+  ctx.fillText(vText, node.x, node.y + 13);
+}
+
+function drawWriteClient() {
+  const c = state.writeClient;
+  const stroke = c.phase === 'received' ? '#00ED64' : c.phase === 'error' ? '#FF6B6B' : '#F5A623';
+  const fill   = c.phase === 'received' ? '#0A2518' : c.phase === 'error' ? '#2A0E0E' : '#0F2030';
+  ctx.save();
+  ctx.beginPath(); ctx.arc(c.x, c.y, CR, 0, Math.PI*2);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#D8E8F3'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText('Write', c.x, c.y - 3); ctx.fillText('Client', c.x, c.y + 10);
+  ctx.fillStyle = '#F5A623'; ctx.font = '8px system-ui';
+  ctx.fillText('w:' + document.getElementById('sel-w').value, c.x, c.y + CR + 12);
+  if (state.writeClient.lastWrittenVersion > 0) {
+    ctx.fillStyle = '#90AEBF'; ctx.font = '8px system-ui';
+    ctx.fillText(`wrote v${c.lastWrittenVersion}`, c.x, c.y + CR + 23);
+  }
+  ctx.restore();
+}
+
+function drawReadClient() {
+  const c = state.readClient;
+  const stroke = c.phase === 'received' ? '#00ED64' : c.phase === 'error' ? '#FF6B6B' : '#7EC8E3';
+  const fill   = c.phase === 'received' ? '#0A2518' : c.phase === 'error' ? '#2A0E0E' : '#0F2535';
+  ctx.save();
+  ctx.beginPath(); ctx.arc(c.x, c.y, CR, 0, Math.PI*2);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#D8E8F3'; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+  ctx.fillText('Read', c.x, c.y - 3); ctx.fillText('Client', c.x, c.y + 10);
+  ctx.fillStyle = '#7EC8E3'; ctx.font = '8px system-ui';
+  ctx.fillText('rc:' + document.getElementById('sel-rc').value, c.x, c.y + CR + 12);
+  if (c.lastReceivedVersion !== null) {
+    const v = c.lastReceivedVersion;
+    const vStr = v.id > 0 ? `v${v.id}` : 'none';
+    const suffix = v.dirty ? ' \u26A0' : v.id > 0 ? ' \u2713' : '';
+    ctx.fillStyle = v.dirty ? '#F5A623' : v.id > 0 ? '#00ED64' : '#90AEBF';
+    ctx.font = '8px system-ui';
+    ctx.fillText(`got ${vStr}${suffix}`, c.x, c.y + CR + 23);
+  }
+  ctx.restore();
+}
+
+function drawParticles() {
+  state.particles.forEach(p => {
+    if (p.x == null) return;
+    ctx.save();
+    ctx.beginPath(); ctx.arc(p.x, p.y, 10, 0, Math.PI*2);
+    ctx.fillStyle = p.color + '28'; ctx.fill();
+    ctx.beginPath(); ctx.arc(p.x, p.y, 5.5, 0, Math.PI*2);
+    ctx.fillStyle = p.color; ctx.fill();
+    if (p.label) {
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 9px system-ui'; ctx.textAlign = 'center';
+      ctx.fillText(p.label, p.x, p.y - 11);
+    }
+    ctx.restore();
+  });
+}
+
+// ═══════════════════════════════════════
+// LOG
+// ═══════════════════════════════════════
+const logEl = document.getElementById('log');
+function log(msg, cls = 'info') {
+  const el = document.createElement('div');
+  el.className = cls;
+  el.textContent = `[${new Date().toLocaleTimeString()}]  ${msg}`;
+  logEl.prepend(el);
+}
+
+function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// ═══════════════════════════════════════
+// EVENTS
+// ═══════════════════════════════════════
+document.getElementById('sel-failure').addEventListener('change', e => {
+  applyFailure(e.target.value); resetWriteVisual(); resetReadVisual(); resetDoc(); draw();
+});
+['sel-w','sel-j','inp-wtimeout'].forEach(id => {
+  document.getElementById(id)?.addEventListener('change', () => { resetWriteVisual(); draw(); });
+});
+['sel-rc','sel-readpref'].forEach(id => {
+  document.getElementById(id)?.addEventListener('change', () => { resetReadVisual(); draw(); });
+});
+window.addEventListener('resize', resizeCanvas);
+
+// ═══════════════════════════════════════
+// INIT
+// ═══════════════════════════════════════
+setReadMode('auto');
+resizeCanvas();
+syncButtons();
+log('Ready — step through a Write, then Probe Read at any pause point.', 'info');
+</script>
+</body>
+</html>

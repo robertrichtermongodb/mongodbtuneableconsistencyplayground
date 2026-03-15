@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MongoDB Read/Write Concerns Playground</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0F1923; color: #D8E8F3;
+      min-height: 100vh; display: flex; flex-direction: column;
+      align-items: center; padding: 20px 16px 56px; gap: 12px;
+    }
+    header { text-align: center; }
+    h1 { font-size: 1.55rem; font-weight: 800; color: #fff; letter-spacing: -0.02em; }
+    .subtitle { margin-top: 4px; font-size: 0.84rem; color: #90AEBF; }
+
+    .card {
+      background: #182535; border: 1px solid #26384A; border-radius: 12px;
+    }
+
+    /* ── Topology hint bar ── */
+    .topo-bar {
+      width: 100%; max-width: 1200px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 2px 6px;
+    }
+    .topo-hint { font-size: 0.72rem; color: #5A7A8A; font-style: italic; }
+
+    /* ── Form elements ── */
+    .cg { display: flex; flex-direction: column; gap: 4px; }
+    .cg label { font-size: 0.72rem; color: #90AEBF; text-transform: uppercase; letter-spacing: 0.05em; }
+
+    select, input[type=number] {
+      background: #0A1E2B; border: 1px solid #26384A; color: #D8E8F3;
+      border-radius: 7px; padding: 6px 9px; font-size: 0.82rem; cursor: pointer;
+    }
+    select:focus, input[type=number]:focus { outline: 2px solid #00ED64; border-color: transparent; }
+
+    .btn-group { display: flex; gap: 5px; }
+    button {
+      background: #00ED64; color: #0F1923; border: none;
+      border-radius: 8px; padding: 7px 14px; font-size: 0.84rem; font-weight: 700;
+      cursor: pointer; white-space: nowrap;
+    }
+    button:hover { background: #00c050; }
+    button:disabled { background: #26384A; color: #5a7a8a; cursor: not-allowed; }
+    button.sec { background: #1A2E40; color: #D8E8F3; border: 1px solid #26384A; }
+    button.sec:hover { background: #26384A; }
+    button.sec.on { background: #0A2535; border-color: #00ED64; color: #00ED64; }
+    button.read-btn { background: #7EC8E3; color: #0F1923; }
+    button.read-btn:hover { background: #5ab8d8; }
+
+
+    /* ── Config row: write config | step panels | read config ── */
+    .config-row {
+      display: flex; gap: 12px;
+      width: 100%; max-width: 1200px;
+      align-items: stretch;
+    }
+    .config-panel {
+      width: 185px; flex-shrink: 0;
+      padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    }
+    .config-panel select { width: 100%; }
+    .config-header {
+      font-size: 0.75rem; font-weight: 800;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      padding-bottom: 6px; margin-bottom: 2px;
+    }
+    .write-config .config-header { color: #F5A623; border-bottom: 2px solid #F5A62340; }
+    .read-config  .config-header { color: #7EC8E3;  border-bottom: 2px solid #7EC8E340; }
+    .step-card { flex: 1; }
+
+    /* ── Stage (full-width canvas row) ── */
+    .stage { padding: 14px; position: relative; width: 100%; max-width: 1200px; }
+    #canvas { display: block; width: 100%; height: 560px; }
+
+    /* ── Consistency overlays (float over canvas near client icons) ── */
+    .consistency-overlay {
+      position: absolute; top: 10px; width: 148px;
+      background: rgba(13, 31, 48, 0.92); border: 1px solid #1E3346;
+      border-radius: 8px; padding: 8px 10px; z-index: 2; pointer-events: none;
+    }
+    .write-overlay { left: 10px; }
+    .read-overlay  { right: 10px; }
+    .cb-dim    { color: #3D5570; font-size: 0.75rem; }
+    .cb-label  { font-size: 0.67rem; color: #90AEBF; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 3px; }
+    .cb-status { font-size: 0.82rem; font-weight: 700; margin-bottom: 3px; }
+    .cb-ok     { color: #00ED64; }
+    .cb-warn   { color: #F5A623; }
+    .cb-error  { color: #FF6B6B; }
+    .cb-detail { font-size: 0.70rem; color: #6A8A9F; line-height: 1.45; }
+
+    /* ── Step panels ── */
+    .panel-start { margin-bottom: 10px; }
+    .panel-start button { width: 100%; padding: 5px 11px; font-size: 0.78rem; }
+    .snapshot-actions { display: none; gap: 6px; flex-wrap: wrap; }
+    .snapshot-actions button { flex: 1; min-width: 110px; }
+    .step-card { display: block; }
+    .step-panels { display: flex; }
+    .step-panel { flex: 1; padding: 13px 16px 15px; min-height: 240px; }
+    .step-actions button { padding: 5px 11px; font-size: 0.78rem; }
+    .step-panel-idle { color: #3D5570; font-size: 0.82rem; font-style: italic; }
+    .step-panel + .step-panel { border-left: 1px solid #26384A; }
+    .write-step-panel { border-top: 2px solid #F5A623; }
+    .read-step-panel  { border-top: 2px solid #7EC8E3; }
+    .step-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; flex-wrap: wrap; }
+    .step-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
+    .write-label { background: #F5A623; color: #0F1923; }
+    .read-label  { background: #7EC8E3; color: #0F1923; }
+    .step-badge { font-size: 0.7rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.07em; color: #90AEBF; }
+    .step-dots { display: flex; gap: 5px; }
+    .step-dot { width: 7px; height: 7px; border-radius: 50%; background: #26384A; transition: background .2s; }
+    .step-dot.done    { background: #00ED64; }
+    .step-dot.current { background: #F5A623; }
+    .step-title { font-size: 0.97rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
+    .step-explain { font-size: 0.83rem; color: #90AEBF; line-height: 1.6; }
+    .step-explain strong { color: #D8E8F3; }
+    .step-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+    /* ── Log ── */
+    .log-card { width: 100%; max-width: 1200px; }
+    .log-panel { padding: 11px 16px; }
+    .log-panel h2 { font-size: 0.72rem; text-transform: uppercase; letter-spacing: .06em; color: #90AEBF; margin-bottom: 7px; }
+    #log { font-family: 'SF Mono','Fira Code',monospace; font-size: 0.77rem; line-height: 1.65; color: #90AEBF; min-height: 44px; max-height: 120px; overflow-y: auto; }
+    #log .ok   { color: #00ED64; }
+    #log .warn { color: #F5A623; }
+    #log .err  { color: #FF6B6B; }
+    #log .info { color: #7EC8E3; }
+
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>MongoDB Concerns Playground</h1>
+  <p class="subtitle">Visualise how read &amp; write concerns shape data flow in a 3-node replica set</p>
+</header>
+
+<!-- Topology hint + Reset -->
+<div class="topo-bar">
+  <span class="topo-hint">Click nodes to toggle health · Click links to partition · Click client arrows to interrupt</span>
+  <button class="sec" id="btn-reset" onclick="resetScenario()">Reset ↺</button>
+</div>
+
+<!-- ═══ Top row: write config | step panels | read config ═══ -->
+<div class="config-row">
+
+  <!-- Left: Write concern config -->
+  <div class="card config-panel write-config">
+    <div class="config-header">Write Client</div>
+    <div class="cg">
+      <label>Write concern (w)</label>
+      <select id="sel-w">
+        <option value="0">0 — fire &amp; forget</option>
+        <option value="1">1 — primary only</option>
+        <option value="2">2 — primary + 1 sec</option>
+        <option value="3">3 — all nodes</option>
+        <option value="majority" selected>majority</option>
+      </select>
+    </div>
+    <div class="cg">
+      <label>Journal (j)</label>
+      <select id="sel-j">
+        <option value="false" selected>false</option>
+        <option value="true">true</option>
+      </select>
+    </div>
+  </div>
+
+  <!-- Center: Step panels -->
+  <div class="card step-card" id="step-card">
+    <div class="step-panels">
+
+      <div class="step-panel write-step-panel" id="write-step-panel">
+        <div class="panel-start">
+          <button id="btn-write-start" onclick="handleWrite()">New doc with ID 1</button>
+        </div>
+        <div class="step-meta">
+          <span class="step-label write-label">WRITE</span>
+          <span class="step-badge" id="write-step-badge"></span>
+          <div class="step-dots" id="write-step-dots"></div>
+        </div>
+        <div class="step-title" id="write-step-title"></div>
+        <div class="step-explain" id="write-step-explain"><span class="step-panel-idle">Start a write to step through the replication flow.</span></div>
+        <div class="step-actions">
+          <button id="btn-write-next" onclick="advanceWriteStep()" disabled>Next →</button>
+          <button class="sec" id="btn-write-finish" onclick="autoFinishWrite()" disabled>Finish ▶▶</button>
+        </div>
+      </div>
+
+      <div class="step-panel read-step-panel" id="read-step-panel">
+        <div class="panel-start">
+          <button class="read-btn" id="btn-read-start" onclick="handleRead()">Query doc with ID 1</button>
+          <div class="snapshot-actions" id="snapshot-session-actions">
+            <button class="read-btn" id="btn-read-session-start" onclick="handleSnapshotStart()">Start session &amp; read</button>
+            <button class="read-btn" id="btn-read-session-again" onclick="handleSnapshotReadAgain()">Read again</button>
+            <button class="sec" id="btn-read-session-end" onclick="handleSnapshotEnd()">End session</button>
+          </div>
+        </div>
+        <div class="step-meta">
+          <span class="step-label read-label">READ</span>
+          <span class="step-badge" id="read-step-badge"></span>
+          <div class="step-dots" id="read-step-dots"></div>
+        </div>
+        <div class="step-title" id="read-step-title"></div>
+        <div class="step-explain" id="read-step-explain"><span class="step-panel-idle">Probe the replica set to observe read concern behaviour.</span></div>
+        <div class="step-actions">
+          <button class="read-btn" id="btn-read-next" onclick="advanceReadStep()" disabled>Next →</button>
+          <button class="sec" id="btn-read-finish" onclick="autoFinishRead()" disabled>Finish ▶▶</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Right: Read concern config -->
+  <div class="card config-panel read-config">
+    <div class="config-header">Read Client</div>
+    <div class="cg">
+      <label>Read concern</label>
+      <select id="sel-rc">
+        <option value="local">local</option>
+        <option value="available">available</option>
+        <option value="majority" selected>majority</option>
+        <option value="snapshot">snapshot</option>
+        <option value="linearizable">linearizable</option>
+      </select>
+    </div>
+    <div class="cg">
+      <label>Read preference</label>
+      <select id="sel-readpref">
+        <option value="primary" selected>primary</option>
+        <option value="primaryPreferred">primaryPreferred</option>
+        <option value="secondary">secondary</option>
+        <option value="secondaryPreferred">secondaryPreferred</option>
+      </select>
+    </div>
+  </div>
+
+</div><!-- /config-row -->
+
+<!-- ═══ Full-width canvas — consistency status floats over it ═══ -->
+<div class="card stage">
+  <div class="consistency-overlay write-overlay" id="writer-consistency">
+    <div class="cb-dim">No writes issued</div>
+  </div>
+  <div class="consistency-overlay read-overlay" id="reader-consistency">
+    <div class="cb-dim">No reads completed</div>
+  </div>
+  <canvas id="canvas"></canvas>
+</div>
+
+<div class="card log-card log-panel">
+  <h2>Event log</h2>
+  <div id="log"></div>
+</div>
+
+<script src="js/state.js"></script>
+<script src="js/icons.js"></script>
+<script src="js/engine.js"></script>
+<script src="js/draw.js"></script>
+<script src="js/simulation.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
