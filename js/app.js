@@ -88,9 +88,26 @@ function resetReadVisual(opts = {}) {
   showStepPanel(-1, readEngine, 'read-step-panel');
 }
 
+function resetElectionVisual() {
+  electionEngine.done = false; electionEngine.idx = -1; electionEngine.aborted = false;
+  electionEngine._waitResolve = null; electionEngine.busy = false; electionEngine.steps = [];
+  if (_autoFinishElectionId) { clearInterval(_autoFinishElectionId); _autoFinishElectionId = null; }
+  showStepPanel(-1, electionEngine, 'election-step-panel');
+}
+
+function handleElection() {
+  if (electionEngine.busy || (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted)) return;
+  resetElectionVisual();
+  resetWriteVisual();
+  draw();
+  log('─── Election triggered ───', 'warn');
+  runEngine(buildElectionSteps(), electionEngine, 'election-step-panel');
+}
+
 function resetScenario() {
   resetWriteVisual();
   resetReadVisual();
+  resetElectionVisual();
   resetDoc();
   resetLinks();
   Object.values(state.nodes).forEach(n => { n.alive = true; n.phase = 'idle'; });
@@ -208,14 +225,16 @@ canvas.addEventListener('click', e => {
   if (hit.type === 'node') {
     state.nodes[hit.key].alive = !state.nodes[hit.key].alive;
     const n = state.nodes[hit.key];
-    log(`${n.label} ${n.alive ? 'brought online' : 'taken down'}.`, n.alive ? 'ok' : 'warn');
-    resetWriteVisual(); resetReadVisual(); resetDoc();
+    log(`${n.label} ${n.alive ? 'brought online' : 'taken down'} — document state preserved.`, n.alive ? 'ok' : 'warn');
+    resetWriteVisual(); resetReadVisual();
   } else if (hit.type === 'link') {
-    const lk = 'p' + hit.key;
-    state.links[lk] = !state.links[lk];
-    const label = `Primary \u2194 ${state.nodes[hit.key].label}`;
-    log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'}.`, state.links[lk] ? 'ok' : 'warn');
-    resetWriteVisual(); resetReadVisual(); resetDoc();
+    const lk = getLinkBetween(state.primaryKey, hit.key);
+    if (lk) {
+      state.links[lk] = !state.links[lk];
+      const label = `${state.nodes[state.primaryKey].label} \u2194 ${state.nodes[hit.key].label}`;
+      log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} — document state preserved.`, state.links[lk] ? 'ok' : 'warn');
+      resetWriteVisual(); resetReadVisual();
+    }
   } else if (hit.type === 'clientLink') {
     if (hit.key === 'wp') {
       state.links.wp = !state.links.wp;

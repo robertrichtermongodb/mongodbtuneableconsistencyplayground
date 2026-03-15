@@ -5,25 +5,27 @@ function resolveW(raw) { return raw === 'majority' ? 'majority' : parseInt(raw, 
 
 function canAchieve(w) {
   if (w === 0) return true;
-  const count = ['primary','s1','s2'].filter(k => isReachableForWrite(k)).length;
+  const count = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
   return count >= (w === 'majority' ? 2 : w);
 }
 
 function resolveReadTarget(rc, readPref) {
-  if (rc === 'linearizable') return 'primary';
+  const pk = state.primaryKey;
+  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
+  if (rc === 'linearizable') return pk;
   if (readPref === 'primary')
-    return state.nodes.primary.alive ? 'primary' : null;
+    return state.nodes[pk].alive ? pk : null;
   if (readPref === 'primaryPreferred') {
-    if (state.nodes.primary.alive) return 'primary';
-    return ['s2','s1'].find(k => state.nodes[k].alive) || null;
+    if (state.nodes[pk].alive) return pk;
+    return secKeys.find(k => state.nodes[k].alive) || null;
   }
   if (readPref === 'secondary')
-    return ['s2','s1'].find(k => state.nodes[k].alive) || null;
+    return secKeys.slice().reverse().find(k => state.nodes[k].alive) || null;
   if (readPref === 'secondaryPreferred') {
-    const s = ['s2','s1'].find(k => state.nodes[k].alive);
-    return s || (state.nodes.primary.alive ? 'primary' : null);
+    const s = secKeys.find(k => state.nodes[k].alive);
+    return s || (state.nodes[pk].alive ? pk : null);
   }
-  return 'primary';
+  return pk;
 }
 
 // ═══════════════════════════════════════
@@ -45,9 +47,10 @@ function buildWriteSteps(w, j) {
     return steps;
   }
 
+  const pk            = state.primaryKey;
   const achievable    = canAchieve(w);
-  const reachableSecs = ['s1','s2'].filter(k => isReachableForWrite(k));
-  const reachCount    = ['primary','s1','s2'].filter(k => isReachableForWrite(k)).length;
+  const reachableSecs = Object.keys(state.nodes).filter(k => k !== pk && isReachableForWrite(k));
+  const reachCount    = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
   const needCount     = w === 'majority' ? 2 : w === 0 ? 0 : w;
   const secsNeeded    = w === 'majority' ? 1 : (typeof w === 'number' && w > 1) ? w - 1 : 0;
 
@@ -66,18 +69,18 @@ function buildWriteSteps(w, j) {
       state.doc.versions.push(entry);
       state.doc.latestId = nextId;
       state.writeClient.lastWrittenVersion = nextId;
-      return awaitParticle(state.writeClient, state.nodes.primary, '#F5A623', op === 'insert' ? 'INS' : 'UPD', () => {
-        state.nodes.primary.phase = 'active';
+      return awaitParticle(state.writeClient, state.nodes[state.primaryKey], '#F5A623', op === 'insert' ? 'INS' : 'UPD', () => {
+        state.nodes[state.primaryKey].phase = 'active';
         state.writeClient.phase = 'waiting';
         log(`Write received by primary (${opLabel}).`, 'info');
       });
     },
   });
 
-  if (!state.nodes.primary.alive) {
+  if (!state.nodes[pk].alive) {
     steps.push({
       title: 'No primary \u2014 write fails',
-      explain: `The primary is down. MongoDB needs a primary to accept writes. With ${reachCount} reachable node(s), no election is possible (majority = 2). <strong>Write fails immediately.</strong>`,
+      explain: `The primary is down. MongoDB needs a primary to accept writes. With ${reachCount} reachable node(s), no election is possible (majority = 2). <strong>Use the Trigger Election button</strong> if a majority of nodes are alive.`,
       run: async () => { state.writeClient.phase = 'error'; log('Write failed \u2014 no primary.', 'err'); draw(); },
     });
     return steps;
@@ -92,11 +95,11 @@ function buildWriteSteps(w, j) {
       : `Primary applies <strong>${opLabel}</strong> to its <strong>WiredTiger in-memory cache</strong> and appends to the oplog. Not crash-safe until journaled.`,
     run: async () => {
       const entry = state.doc.versions.find(v => v.id === nextId);
-      if (entry) { entry.ackedBy.add('primary'); }
-      state.nodes.primary.docVersionId = nextId;
+      if (entry) { entry.ackedBy.add(state.primaryKey); }
+      state.nodes[state.primaryKey].docVersionId = nextId;
       advanceMajorityCommit();
       if (j) { await delay(500); log('Primary: journal flushed.', 'info'); }
-      state.nodes.primary.phase = w === 0 ? 'acked' : 'active';
+      state.nodes[state.primaryKey].phase = w === 0 ? 'acked' : 'active';
       draw();
     },
   });
@@ -108,7 +111,7 @@ function buildWriteSteps(w, j) {
       explain: `<strong>w:0</strong>: the client gets no acknowledgment. The write may succeed or fail \u2014 the client will never know. Async replication to secondaries proceeds normally.`,
       run: async () => {
         reachableSecs.forEach((k, i) => setTimeout(() =>
-          awaitParticle(state.nodes.primary, state.nodes[k], '#4A90D9', 'v' + nextId, () => {
+          awaitParticle(state.nodes[state.primaryKey], state.nodes[k], '#4A90D9', 'v' + nextId, () => {
             state.nodes[k].docVersionId = nextId;
             const entry = state.doc.versions.find(v => v.id === nextId);
             if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
@@ -139,7 +142,7 @@ function buildWriteSteps(w, j) {
           (j ? ` The secondary flushes to journal upon applying.` : ''),
       run: async () => {
         if (j) await delay(200);
-        await awaitParticle(state.nodes.primary, state.nodes[k], '#4A90D9', 'v' + nextId, () => {
+        await awaitParticle(state.nodes[state.primaryKey], state.nodes[k], '#4A90D9', 'v' + nextId, () => {
           state.nodes[k].docVersionId = nextId;
           const entry = state.doc.versions.find(v => v.id === nextId);
           if (entry) { entry.ackedBy.add(k); }
@@ -161,8 +164,8 @@ function buildWriteSteps(w, j) {
         `<strong>The write (${opLabel}) is NOT rolled back</strong> \u2014 it is already on the primary. Click the client link to simulate a timeout, or fix the topology.`,
       run: async () => {
         await delay(600);
-        state.nodes.primary.phase = 'error'; state.writeClient.phase = 'error';
-        await awaitParticle(state.nodes.primary, state.writeClient, '#FF6B6B', 'ERR', () => {});
+        state.nodes[state.primaryKey].phase = 'error'; state.writeClient.phase = 'error';
+        await awaitParticle(state.nodes[state.primaryKey], state.writeClient, '#FF6B6B', 'ERR', () => {});
         log(`Write concern error \u2014 w:${w} unachievable. ${opLabel} sits on primary.`, 'err');
       },
     });
@@ -186,8 +189,8 @@ function buildWriteSteps(w, j) {
         ? `Primary-only acknowledgment. v${nextId} sits on primary \u2014 <strong>rollback risk</strong> if primary steps down before replication.`
         : `Acked by ${needCount} node(s).`),
     run: async () => {
-      state.nodes.primary.phase = 'acked';
-      await awaitParticle(state.nodes.primary, state.writeClient, '#00ED64', 'ACK', () => {
+      state.nodes[state.primaryKey].phase = 'acked';
+      await awaitParticle(state.nodes[state.primaryKey], state.writeClient, '#00ED64', 'ACK', () => {
         state.writeClient.phase = 'received';
       });
       log(`ACK \u2014 w:${w}${j ? ', j:true' : ''} satisfied. ${opLabel} done.`, 'ok');
@@ -229,7 +232,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
 
   const targetKey  = resolveReadTarget(rc, readPref);
   const target     = targetKey ? state.nodes[targetKey] : null;
-  const reachableCount = ['primary','s1','s2'].filter(k => isReachableForWrite(k)).length;
+  const reachableCount = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
   const majorityOk = reachableCount >= 2;
 
   // Pre-compute what this read will serve (at build time = snapshot of current state)
@@ -285,7 +288,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     const dirty = nodeVer > 0 && nodeVer > state.doc.majorityCommitId;
     steps.push({
       title: `Node reads local state → ${nodeLabel}${dirty ? ' ⚠ (dirty)' : nodeVer > 0 ? ' ✓' : ''}`,
-      explain: targetKey !== 'primary'
+      explain: targetKey !== state.primaryKey
         ? `The secondary returns whatever it has in memory — <strong>no waiting, no coordination</strong>. This node holds <strong>${nodeLabel}</strong>${dirty ? `, which is <strong>above majority-commit v${state.doc.majorityCommitId}</strong> — this is a dirty read. If the primary fails now, this write could roll back` : state.doc.majorityCommitId > 0 ? `, majority-committed at v${state.doc.majorityCommitId}` : ''}.`
         : `The primary returns its latest in-memory state: <strong>${nodeLabel}</strong>${dirty ? `. Above majority-commit v${state.doc.majorityCommitId} — dirty read risk if primary crashes before reaching majority` : ''}.`,
       run: async () => {
@@ -323,7 +326,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     steps.push({
       title: `Node reads majority-commit snapshot → ${mcLabel}`,
       explain: `The node reads from its <strong>in-memory majority-commit point</strong> — the highest oplog entry confirmed by a majority of nodes: <strong>${mcLabel}</strong>. ` +
-        (targetKey !== 'primary'
+        (targetKey !== state.primaryKey
           ? `On this <strong>secondary</strong>, the majority-commit snapshot may lag the primary's by the replication delay. This is <strong>bounded staleness with zero rollback risk</strong>.`
           : `On the <strong>primary</strong>, this is the most current majority-safe view. No rollback risk.`),
       run: async () => {
@@ -335,7 +338,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     });
 
   } else if (rc === 'linearizable') {
-    const liveSecs = ['s1','s2'].filter(k => isReachableForWrite(k));
+    const liveSecs = Object.keys(state.nodes).filter(k => k !== state.primaryKey && isReachableForWrite(k));
     steps.push({
       title: 'Primary checks leadership with secondaries',
       explain: `<strong>rc:linearizable</strong> requires the primary to confirm it can still complete <strong>w:majority</strong> writes before serving the read. It does this by verifying replication with secondaries. ` +
@@ -423,4 +426,76 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
 
 function readPrefLabel(p) {
   return { primary:'Primary', primaryPreferred:'Primary (preferred)', secondary:'Secondary', secondaryPreferred:'Secondary (preferred)' }[p] || p;
+}
+
+// ═══════════════════════════════════════
+// BUILD ELECTION STEPS
+// ═══════════════════════════════════════
+function buildElectionSteps() {
+  const pk = state.primaryKey;
+  // Eligible candidates: alive nodes that are not the current primary
+  const candidates = Object.keys(state.nodes)
+    .filter(k => k !== pk && state.nodes[k].alive)
+    .sort((a, b) => (state.nodes[b].docVersionId || 0) - (state.nodes[a].docVersionId || 0));
+
+  if (candidates.length === 0) {
+    return [{
+      title: 'No eligible candidates — election impossible',
+      explain: `No alive secondaries available. A majority (≥ 2 nodes) must be reachable for an election to succeed. Bring at least one secondary back online first.`,
+      run: async () => { log('Election aborted — no eligible candidates.', 'err'); draw(); },
+    }];
+  }
+
+  const winner     = candidates[0];
+  const winnerNode = state.nodes[winner];
+  const steps      = [];
+
+  // Step 1 — election campaign
+  steps.push({
+    title: `Election triggered — ${winnerNode.label} campaigns`,
+    explain: `Secondaries stop receiving heartbeats from the primary and start an election after <strong>electionTimeoutMillis</strong> (default 10 s). ` +
+      `<em>Under the hood MongoDB uses <strong>RAFT consensus</strong>: each secondary sends a vote request containing its last oplog term and timestamp; peers only vote for a candidate whose oplog is at least as up-to-date as theirs, and each node votes at most once per term. The candidate that collects a majority of votes wins.</em> ` +
+      `<strong>${winnerNode.label}</strong> has the most recent oplog (v${winnerNode.docVersionId || 'none'}) and qualifies as primary.`,
+    run: async () => {
+      winnerNode.phase = 'candidate';
+      draw();
+      log(`Election in progress — ${winnerNode.label} is campaigning (oplog v${winnerNode.docVersionId || 'none'}).`, 'warn');
+    },
+  });
+
+  // Step 2 — election complete + rollback uncommitted
+  const uncommitted = state.doc.versions.filter(v => v.id > state.doc.majorityCommitId);
+  const rollbackNote = uncommitted.length > 0
+    ? ` <strong>Uncommitted write(s) ${uncommitted.map(v => `v${v.id}`).join(', ')} are rolled back</strong> — they were never majority-confirmed, so RAFT discards them on the new primary. Any client that already read these values via rc:local now holds stale data.`
+    : ` No uncommitted writes — all data is safe.`;
+
+  steps.push({
+    title: `${winnerNode.label} elected — new Primary`,
+    explain: `Election complete. <strong>${winnerNode.label}</strong> wins after collecting a majority of votes and is now the primary.${rollbackNote} Majority-committed data (v${state.doc.majorityCommitId || 'none'}) is intact on all surviving nodes.`,
+    run: async () => {
+      // Promote winner
+      state.primaryKey = winner;
+      const oldLabel = winnerNode.label;
+      winnerNode.label = 'Primary';
+      state.nodes[pk].label = 'Old Primary';
+
+      // Roll back writes that were never majority-committed
+      state.doc.versions = state.doc.versions.filter(v => v.id <= state.doc.majorityCommitId);
+      state.doc.latestId = state.doc.majorityCommitId;
+      Object.values(state.nodes).forEach(n => {
+        n.docVersionId = Math.min(n.docVersionId || 0, state.doc.majorityCommitId);
+      });
+
+      // Reset phases
+      Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+
+      if (uncommitted.length > 0) {
+        log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} removed from uncommitted nodes.`, 'warn');
+      }
+      log(`${oldLabel} is now Primary. Writes can resume.`, 'ok');
+      draw();
+    },
+  });
+
+  return steps;
 }

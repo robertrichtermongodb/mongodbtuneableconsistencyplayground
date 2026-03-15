@@ -1,8 +1,9 @@
 // ═══════════════════════════════════════
 // ENGINES
 // ═══════════════════════════════════════
-const writeEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
-const readEngine  = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
+const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
+const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
+const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
 
 function abortEngine(eng) {
   eng.aborted = true;
@@ -46,6 +47,29 @@ function syncButtons() {
   document.getElementById('btn-read-next').disabled      = rnDis;
   document.getElementById('btn-read-finish').disabled      = re._waitResolve === null;
 
+  // Election button
+  const ee = electionEngine;
+  const electionActive = ee.busy || (ee.idx !== -1 && !ee.done && !ee.aborted);
+  const btnElect = document.getElementById('btn-election-start');
+  if (btnElect) {
+    // Only allow election when the current primary is down and at least one secondary is alive
+    const pk = typeof state !== 'undefined' ? state.primaryKey : 'primary';
+    const primaryDown = typeof state !== 'undefined' && !state.nodes[pk].alive;
+    const hasCandidates = typeof state !== 'undefined' &&
+      Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
+    btnElect.disabled = electionActive || writeActive || readActive || !primaryDown || !hasCandidates;
+    btnElect.title = (!primaryDown)
+      ? 'Take the primary offline first (click the Primary node on the canvas)'
+      : (!hasCandidates)
+      ? 'No alive secondaries to elect'
+      : 'Trigger a new primary election';
+  }
+  const enDis = ee.busy || ee._waitResolve === null;
+  const btnEN = document.getElementById('btn-election-next');
+  const btnEF = document.getElementById('btn-election-finish');
+  if (btnEN) btnEN.disabled = enDis;
+  if (btnEF) btnEF.disabled = ee._waitResolve === null;
+
   // Lock write concern dropdowns while a write is running
   const selW = document.getElementById('sel-w');
   const selJ = document.getElementById('sel-j');
@@ -83,14 +107,30 @@ function advanceReadStep() {
   if (readEngine._waitResolve) { const r = readEngine._waitResolve; readEngine._waitResolve = null; r(); }
 }
 
+function advanceElectionStep() {
+  if (electionEngine._waitResolve) { const r = electionEngine._waitResolve; electionEngine._waitResolve = null; r(); }
+}
+
+let _autoFinishElectionId = null;
+function autoFinishElection() {
+  if (electionEngine.done || electionEngine.idx === -1 || _autoFinishElectionId) return;
+  _autoFinishElectionId = setInterval(() => {
+    if (electionEngine.done || electionEngine.idx === -1) {
+      clearInterval(_autoFinishElectionId); _autoFinishElectionId = null; return;
+    }
+    if (electionEngine._waitResolve && !electionEngine.busy) advanceElectionStep();
+  }, 120);
+}
+
 async function waitForClick(eng) {
   if (eng.mode === 'auto') return;
   return new Promise(r => { eng._waitResolve = r; syncButtons(); });
 }
 
 const IDLE_HINT = {
-  'write-step-panel': 'Start a write to step through the replication flow.',
-  'read-step-panel':  'Probe the replica set to observe read concern behaviour.',
+  'write-step-panel':    'Start a write to step through the replication flow.',
+  'read-step-panel':     'Probe the replica set to observe read concern behaviour.',
+  'election-step-panel': 'Take the primary offline, then trigger an election to see how MongoDB elects a new primary.',
 };
 
 function showStepPanel(i, eng, panelId) {

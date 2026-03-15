@@ -68,8 +68,8 @@ function resizeCanvas() {
   draw();
 }
 
-const PHASE_FILL   = { idle:'#182535', active:'#0D2820', acked:'#0A2010', error:'#2A0E0E', reading:'#0A1E30', serving:'#0A2018', waiting:'#182535', received:'#0A2010' };
-const PHASE_STROKE = { idle:null,      active:'#00ED64', acked:'#00ED64', error:'#FF6B6B', reading:'#7EC8E3', serving:'#00ED64' };
+const PHASE_FILL   = { idle:'#182535', active:'#0D2820', acked:'#0A2010', error:'#2A0E0E', reading:'#0A1E30', serving:'#0A2018', waiting:'#182535', received:'#0A2010', candidate:'#1A1030' };
+const PHASE_STROKE = { idle:null,      active:'#00ED64', acked:'#00ED64', error:'#FF6B6B', reading:'#7EC8E3', serving:'#00ED64', candidate:'#B07AFF' };
 
 // ═══════════════════════════════════════
 // CANVAS HIT TESTING
@@ -88,8 +88,10 @@ function hitTest(mx, my) {
   for (const [key, node] of Object.entries(state.nodes)) {
     if (Math.hypot(mx - node.x, my - node.y) <= NR + 5) return { type: 'node', key };
   }
-  const p = state.nodes.primary;
-  for (const key of ['s1', 's2']) {
+  const pk = state.primaryKey;
+  const p  = state.nodes[pk];
+  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
+  for (const key of secKeys) {
     const s = state.nodes[key];
     const dist = pointToSegDist(mx, my, p.x, p.y, s.x, s.y);
     if (dist < 14 && Math.hypot(mx - p.x, my - p.y) > NR + 8 && Math.hypot(mx - s.x, my - s.y) > NR + 8)
@@ -125,9 +127,9 @@ function draw() {
   drawReplicationLinks();
   drawWriteClientLine();
   drawReadClientLine();
-  drawNode(state.nodes.s1,      'secondary');
-  drawNode(state.nodes.s2,      'secondary');
-  drawNode(state.nodes.primary, 'primary');
+  Object.entries(state.nodes).forEach(([k, n]) =>
+    drawNode(n, k === state.primaryKey ? 'primary' : 'secondary')
+  );
   drawWriteClient();
   drawReadClient();
   drawDocLedger();
@@ -138,8 +140,8 @@ function draw() {
 
 function drawDocLedger() {
   const { latestId, majorityCommitId } = state.doc;
-  const cx   = state.nodes.primary.x;
-  const midY = (state.writeClient.y + state.nodes.primary.y) / 2;
+  const cx   = state.nodes[state.primaryKey].x;
+  const midY = (state.writeClient.y + state.nodes[state.primaryKey].y) / 2;
 
   ctx.save();
   ctx.textAlign = 'center';
@@ -198,11 +200,13 @@ function drawRSBox() {
 }
 
 function drawReplicationLinks() {
-  const p = state.nodes.primary;
-  ['s1','s2'].forEach(k => {
+  const pk = state.primaryKey;
+  const p  = state.nodes[pk];
+  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
+  secKeys.forEach(k => {
     const s = state.nodes[k];
-    const linkKey = 'p' + k;
-    const linked = state.links[linkKey];
+    const lk = getLinkBetween(pk, k);
+    const linked = lk ? state.links[lk] : true; // s1↔s2 after election: always connected
     const broken = !linked || !s.alive;
     const hovered = hoverTarget && hoverTarget.type === 'link' && hoverTarget.key === k;
     ctx.save();
@@ -240,7 +244,7 @@ function drawReplicationLinks() {
 }
 
 function drawWriteClientLine() {
-  const p = state.nodes.primary;
+  const p = state.nodes[state.primaryKey];
   const wc = state.writeClient;
   const linked = state.links.wp;
   const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === 'wp';
@@ -325,14 +329,22 @@ function drawNode(node, role) {
   ctx.strokeStyle = stroke; ctx.lineWidth = node.phase !== 'idle' ? 3 : 1.8; ctx.stroke();
 
   const leafColor =
-    !node.alive             ? '#2A3D50' :
-    node.phase === 'acked'  ? '#00ED64' :
-    node.phase === 'serving'? '#00ED64' :
-    node.phase === 'active' ? '#4DCC90' :
-    node.phase === 'reading'? '#7EC8E3' :
-    node.phase === 'error'  ? '#FF6B6B' :
-    role === 'primary'      ? '#E09A20' : '#5AAAE8';
+    !node.alive                ? '#2A3D50' :
+    node.phase === 'acked'     ? '#00ED64' :
+    node.phase === 'serving'   ? '#00ED64' :
+    node.phase === 'active'    ? '#4DCC90' :
+    node.phase === 'reading'   ? '#7EC8E3' :
+    node.phase === 'error'     ? '#FF6B6B' :
+    node.phase === 'candidate' ? '#B07AFF' :
+    role === 'primary'         ? '#E09A20' : '#5AAAE8';
   drawIcon(ICON_LEAF, node.x, node.y - 10, 30, leafColor, 24);
+
+  // Candidate pulsing ring
+  if (node.phase === 'candidate') {
+    ctx.beginPath(); ctx.arc(node.x, node.y, NR + 7, 0, Math.PI * 2);
+    ctx.strokeStyle = '#B07AFF'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
 
   ctx.fillStyle = '#D8E8F3'; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center';
   ctx.fillText(node.label, node.x, node.y + 22);

@@ -16,6 +16,7 @@ const state = {
     s1:      { label: 'Secondary 1', x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
     s2:      { label: 'Secondary 2', x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
   },
+  primaryKey: 'primary', // which node key is currently acting as primary
   writeClient: { x: 0, y: 0, phase: 'idle', lastWrittenVersion: 0 },
   readClient:  {
     x: 0, y: 0, phase: 'idle', lastReceivedVersion: null,
@@ -42,13 +43,29 @@ function resetDoc() {
   state.readClient.lastReceivedVersion = null;
   state.readClient.sessionActive = false;
   state.readClient.sessionSnapshotId = null;
+  // Reset election state
+  state.primaryKey = 'primary';
+  state.nodes.primary.label = 'Primary';
+  state.nodes.s1.label = 'Secondary 1';
+  state.nodes.s2.label = 'Secondary 2';
 }
 
 function resetLinks() { state.links.ps1 = true; state.links.ps2 = true; state.links.wp = true; state.links.rp = true; }
 
+// Returns the link key for the structural connection between two node keys.
+// Links are named for the original topology: ps1 = 'primary'↔'s1', ps2 = 'primary'↔'s2'.
+// After election the same link keys still represent the physical wire between those node slots.
+function getLinkBetween(a, b) {
+  if ((a === 'primary' && b === 's1') || (a === 's1' && b === 'primary')) return 'ps1';
+  if ((a === 'primary' && b === 's2') || (a === 's2' && b === 'primary')) return 'ps2';
+  return null; // s1↔s2 has no toggleable link — always connected after election
+}
+
 function isReachableForWrite(key) {
-  if (key === 'primary') return state.nodes.primary.alive;
-  return state.nodes[key].alive && state.links['p' + key];
+  const pk = state.primaryKey;
+  if (key === pk) return state.nodes[key].alive;
+  const lk = getLinkBetween(pk, key);
+  return state.nodes[key].alive && (lk ? state.links[lk] : true);
 }
 
 function getServedVersion(nodeKey, rc) {
