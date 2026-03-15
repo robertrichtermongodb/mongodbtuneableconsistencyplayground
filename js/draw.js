@@ -405,9 +405,16 @@ function drawWriteClient() {
 
 function drawReadClient() {
   const c = state.readClient;
+  const sessionActive = !!c.sessionActive;
   const stroke = c.phase === 'received' ? '#00ED64' : c.phase === 'error' ? '#FF6B6B' : '#7EC8E3';
   const fill   = c.phase === 'received' ? '#0A2518' : c.phase === 'error' ? '#2A0E0E' : '#0F2535';
   ctx.save();
+  // Session-active ring (outer glow when snapshot session is active)
+  if (sessionActive) {
+    ctx.beginPath(); ctx.arc(c.x, c.y, CR + 6, 0, Math.PI*2);
+    ctx.strokeStyle = '#F5A623'; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
   ctx.beginPath(); ctx.arc(c.x, c.y, CR, 0, Math.PI*2);
   ctx.fillStyle = fill; ctx.fill();
   ctx.strokeStyle = stroke; ctx.lineWidth = 2.5; ctx.stroke();
@@ -415,13 +422,20 @@ function drawReadClient() {
   ctx.fillText('Read', c.x, c.y - 4); ctx.fillText('Client', c.x, c.y + 11);
   ctx.fillStyle = '#7EC8E3'; ctx.font = '9px system-ui';
   ctx.fillText('rc:' + document.getElementById('sel-rc').value, c.x, c.y + CR + 14);
+  let yOff = CR + 27;
+  if (sessionActive) {
+    const snapLabel = c.sessionSnapshotId > 0 ? `v${c.sessionSnapshotId}` : 'none';
+    ctx.fillStyle = '#F5A623'; ctx.font = '9px system-ui';
+    ctx.fillText('Session @ ' + snapLabel, c.x, c.y + yOff);
+    yOff += 13;
+  }
   if (c.lastReceivedVersion !== null) {
     const v = c.lastReceivedVersion;
     const vStr = v.id > 0 ? `v${v.id}` : 'none';
     const suffix = v.dirty ? ' \u26A0' : v.id > 0 ? ' \u2713' : '';
     ctx.fillStyle = v.dirty ? '#F5A623' : v.id > 0 ? '#00ED64' : '#90AEBF';
     ctx.font = '9px system-ui';
-    ctx.fillText(`got ${vStr}${suffix}`, c.x, c.y + CR + 27);
+    ctx.fillText(`got ${vStr}${suffix}`, c.x, c.y + yOff);
   }
   ctx.restore();
 }
