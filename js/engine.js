@@ -12,24 +12,44 @@ function abortEngine(eng) {
 
 
 function syncButtons() {
-  const we = writeEngine, re = readEngine;
-  const writeActive = we.busy || (we.idx !== -1 && !we.done && !we.aborted);
-  const readActive  = re.busy || (re.idx !== -1 && !re.done && !re.aborted);
+  const we = writeEngine, re = readEngine, ee = electionEngine;
+  const writeActive    = we.busy || (we.idx !== -1 && !we.done && !we.aborted);
+  const readActive     = re.busy || (re.idx !== -1 && !re.done && !re.aborted);
+  const electionActive = ee.busy || (ee.idx !== -1 && !ee.done && !ee.aborted);
 
-  // Write start button — text reflects whether this is a first insert or a subsequent update
+  // ── Write panel — repurposed for election steps when election is active ──
+  const writePanelEl = document.getElementById('write-step-panel');
+  if (writePanelEl) {
+    const lbl = writePanelEl.querySelector('.step-label');
+    if (electionActive) {
+      writePanelEl.classList.add('election-mode');
+      if (lbl) lbl.textContent = 'ELECTION';
+    } else {
+      writePanelEl.classList.remove('election-mode');
+      if (lbl) lbl.textContent = 'WRITE';
+    }
+  }
+
+  // Write start button
   const isFirstWrite = typeof state !== 'undefined' && state.doc.latestId === 0;
   const btnWS = document.getElementById('btn-write-start');
   btnWS.textContent = we.aborted ? 'Retry' : isFirstWrite ? 'New doc with ID 1' : 'Update doc with ID 1';
-  btnWS.disabled    = writeActive;
+  btnWS.disabled    = writeActive || electionActive;
+  btnWS.title = electionActive ? 'Election in progress — wait for it to complete'
+              : writeActive    ? 'Write already in progress — finish or reset first'
+              : '';
 
-  const wnDis = we.busy || we._waitResolve === null;
+  // Write/election Next + Finish — controlled by whichever engine is active
+  const activeEng  = electionActive ? ee : we;
+  const wnDis = activeEng.busy || activeEng._waitResolve === null;
   document.getElementById('btn-write-next').disabled   = wnDis;
-  document.getElementById('btn-write-finish').disabled = we._waitResolve === null;
+  document.getElementById('btn-write-finish').disabled = activeEng._waitResolve === null;
 
-  // Read start button — always describes the action
+  // ── Read panel ──
   const btnRS = document.getElementById('btn-read-start');
   btnRS.textContent = re.aborted ? 'Retry' : 'Query doc with ID 1';
   btnRS.disabled    = readActive;
+  btnRS.title = readActive ? 'Read already in progress — finish or reset first' : '';
   if (typeof updateReadActionControls === 'function') updateReadActionControls();
 
   const btnSnapStart = document.getElementById('btn-read-session-start');
@@ -38,43 +58,58 @@ function syncButtons() {
   if (btnSnapStart && btnSnapAgain && btnSnapEnd) {
     const sessionActive = !!state.readClient.sessionActive;
     btnSnapStart.disabled = readActive || sessionActive;
+    btnSnapStart.title    = readActive    ? 'Read in progress — finish first'
+                          : sessionActive ? 'End the current session first' : '';
     btnSnapAgain.disabled = readActive || !sessionActive;
+    btnSnapAgain.title    = readActive     ? 'Read in progress — finish first'
+                          : !sessionActive ? 'Start a session first' : '';
     btnSnapEnd.disabled   = readActive || !sessionActive;
+    btnSnapEnd.title      = !sessionActive ? 'No active session' : '';
   }
 
   const rnDis = re.busy || re._waitResolve === null;
-  document.getElementById('btn-read-next').style.display = '';
-  document.getElementById('btn-read-next').disabled      = rnDis;
-  document.getElementById('btn-read-finish').disabled      = re._waitResolve === null;
+  document.getElementById('btn-read-next').disabled   = rnDis;
+  document.getElementById('btn-read-finish').disabled = re._waitResolve === null;
 
-  // Election button
-  const ee = electionEngine;
-  const electionActive = ee.busy || (ee.idx !== -1 && !ee.done && !ee.aborted);
-  const btnElect = document.getElementById('btn-election-start');
-  if (btnElect) {
-    // Only allow election when the current primary is down and at least one secondary is alive
-    const pk = typeof state !== 'undefined' ? state.primaryKey : 'primary';
-    const primaryDown = typeof state !== 'undefined' && !state.nodes[pk].alive;
-    const hasCandidates = typeof state !== 'undefined' &&
-      Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
-    btnElect.disabled = electionActive || writeActive || readActive || !primaryDown || !hasCandidates;
-    btnElect.title = (!primaryDown)
-      ? 'Take the primary offline first (click the Primary node on the canvas)'
-      : (!hasCandidates)
-      ? 'No alive secondaries to elect'
-      : 'Trigger a new primary election';
-  }
-  const enDis = ee.busy || ee._waitResolve === null;
-  const btnEN = document.getElementById('btn-election-next');
-  const btnEF = document.getElementById('btn-election-finish');
-  if (btnEN) btnEN.disabled = enDis;
-  if (btnEF) btnEF.disabled = ee._waitResolve === null;
-
-  // Lock write concern dropdowns while a write is running
+  // ── Lock dropdowns ──
   const selW = document.getElementById('sel-w');
   const selJ = document.getElementById('sel-j');
-  if (selW) selW.disabled = writeActive;
-  if (selJ) selJ.disabled = writeActive;
+  if (selW) { selW.disabled = writeActive; selW.title = writeActive ? 'Cannot change while a write is in progress' : ''; }
+  if (selJ) { selJ.disabled = writeActive; selJ.title = writeActive ? 'Cannot change while a write is in progress' : ''; }
+
+  const selRC = document.getElementById('sel-rc');
+  const selRP = document.getElementById('sel-readpref');
+  if (selRC) { selRC.disabled = readActive; selRC.title = readActive ? 'Cannot change while a read is in progress' : ''; }
+  if (selRP) { selRP.disabled = readActive; selRP.title = readActive ? 'Cannot change while a read is in progress' : ''; }
+
+  // ── Canvas election button — contextual overlay near dead primary ──
+  const canvasBtnEl = document.getElementById('btn-canvas-election');
+  if (canvasBtnEl && typeof state !== 'undefined') {
+    const pk = state.primaryKey;
+    const pNode = state.nodes[pk];
+    const primaryDown   = !state.nodes[pk].alive;
+    const hasCandidates = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
+    const show = primaryDown && hasCandidates && !electionActive && !writeActive && !readActive;
+    canvasBtnEl.style.display = show ? 'block' : 'none';
+    if (show) {
+      // pNode.x/y are CSS pixels within the canvas; canvas sits at padding=14px inside .stage
+      canvasBtnEl.style.left = (14 + pNode.x) + 'px';
+      canvasBtnEl.style.top  = (14 + pNode.y + 52 + 18) + 'px'; // NR=52, 18px gap
+    }
+  }
+}
+
+// ── Write panel Next/Finish smart wrappers ──
+// When election is running, these advance the election engine instead of the write engine.
+function handleWritePanelNext() {
+  const ee = electionEngine;
+  if (ee.idx !== -1 && !ee.done && !ee.aborted) advanceElectionStep();
+  else advanceWriteStep();
+}
+function handleWritePanelFinish() {
+  const ee = electionEngine;
+  if (ee.idx !== -1 && !ee.done && !ee.aborted) autoFinishElection();
+  else autoFinishWrite();
 }
 
 function advanceWriteStep() {
@@ -128,12 +163,12 @@ async function waitForClick(eng) {
 }
 
 const IDLE_HINT = {
-  'write-step-panel':    'Start a write to step through the replication flow.',
-  'read-step-panel':     'Probe the replica set to observe read concern behaviour.',
-  'election-step-panel': 'Take the primary offline, then trigger an election to see how MongoDB elects a new primary.',
+  'write-step-panel': 'Start a write to step through the replication flow.',
+  'read-step-panel':  'Probe the replica set to observe read concern behaviour.',
 };
 
 function showStepPanel(i, eng, panelId) {
+  // When election uses the write panel, use the actual write panel DOM element IDs
   const prefix = panelId.replace(/-panel$/, '');
   if (i < 0 || eng.steps.length === 0) {
     document.getElementById(prefix + '-badge').textContent = '';
@@ -146,7 +181,12 @@ function showStepPanel(i, eng, panelId) {
   const s = eng.steps[i];
   document.getElementById(prefix + '-badge').textContent  = `Step ${i+1} of ${eng.steps.length}`;
   document.getElementById(prefix + '-title').textContent  = s.title;
-  document.getElementById(prefix + '-explain').innerHTML  = s.explain;
+  // Explain text is collapsible — collapsed by default, user clicks to expand
+  document.getElementById(prefix + '-explain').innerHTML  =
+    `<details class="step-details">` +
+    `<summary class="step-details-toggle">Details</summary>` +
+    `<div class="step-explain-body">${s.explain}</div>` +
+    `</details>`;
   const dotsEl = document.getElementById(prefix + '-dots');
   dotsEl.innerHTML = '';
   eng.steps.forEach((_, j) => {

@@ -100,38 +100,18 @@
     .snapshot-actions button { flex: 1; min-width: 110px; }
     .step-card { display: block; }
     .step-panels { display: flex; }
-    .step-panel { flex: 1; padding: 13px 16px 15px; min-height: 240px; }
+    .step-panel { flex: 1; padding: 13px 16px 15px; }
     .step-actions button { padding: 5px 11px; font-size: 0.78rem; }
     .step-panel-idle { color: #3D5570; font-size: 0.82rem; font-style: italic; }
     .step-panel + .step-panel { border-left: 1px solid #26384A; }
-    .write-step-panel    { border-top: 2px solid #F5A623; }
-    .read-step-panel     { border-top: 2px solid #7EC8E3; }
-    .election-step-panel { border-top: 2px solid #B07AFF; }
-    .election-label { background: #B07AFF; color: #0F1923; }
-    button.election-btn { background: #B07AFF; color: #0F1923; }
-    button.election-btn:hover { background: #9060e0; }
-    button.election-btn:disabled { background: #26384A; color: #5a7a8a; }
+    .write-step-panel { border-top: 2px solid #F5A623; }
+    .read-step-panel  { border-top: 2px solid #7EC8E3; }
 
-    /* ── RAFT info badge & tooltip ── */
-    .raft-info { position: relative; display: inline-block; margin-top: 6px; }
-    .raft-badge {
-      display: inline-flex; align-items: center; gap: 4px;
-      font-size: 0.67rem; font-weight: 800; letter-spacing: 0.05em;
-      background: #1A1030; border: 1px solid #B07AFF50;
-      color: #9060CC; border-radius: 4px; padding: 2px 7px;
-      cursor: help; user-select: none;
-    }
-    .raft-badge:hover { color: #B07AFF; border-color: #B07AFF; }
-    .raft-tooltip {
-      display: none; position: absolute; left: 0; top: calc(100% + 4px);
-      background: #0F1923; border: 1px solid #B07AFF40;
-      border-radius: 8px; padding: 10px 12px;
-      font-size: 0.73rem; color: #90AEBF; line-height: 1.55;
-      width: 230px; z-index: 100; pointer-events: none;
-      box-shadow: 0 4px 16px rgba(0,0,0,0.5);
-    }
-    .raft-tooltip strong { color: #B07AFF; }
-    .raft-info:hover .raft-tooltip { display: block; }
+    /* Write panel repurposed for election steps */
+    .write-step-panel.election-mode { border-top-color: #B07AFF; }
+    .write-step-panel.election-mode .step-label { background: #B07AFF !important; }
+    .write-step-panel.election-mode .panel-start { display: none; }
+
     .step-meta { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; flex-wrap: wrap; }
     .step-label { font-size: 0.62rem; font-weight: 800; letter-spacing: 0.1em; padding: 2px 6px; border-radius: 3px; flex-shrink: 0; }
     .write-label { background: #F5A623; color: #0F1923; }
@@ -141,10 +121,49 @@
     .step-dot { width: 7px; height: 7px; border-radius: 50%; background: #26384A; transition: background .2s; }
     .step-dot.done    { background: #00ED64; }
     .step-dot.current { background: #F5A623; }
-    .step-title { font-size: 0.97rem; font-weight: 700; color: #fff; margin-bottom: 4px; }
-    .step-explain { font-size: 0.83rem; color: #90AEBF; line-height: 1.6; }
+    .step-title { font-size: 0.97rem; font-weight: 700; color: #fff; margin-bottom: 4px; min-height: 1.2em; }
+    .step-explain { font-size: 0.83rem; color: #90AEBF; line-height: 1.6; min-height: 2em; }
     .step-explain strong { color: #D8E8F3; }
     .step-actions { display: flex; gap: 6px; margin-top: 10px; }
+
+    /* ── Collapsible step details ── */
+    .step-details { margin-top: 2px; }
+    .step-details-toggle {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 0.72rem; color: #4A6880; cursor: pointer;
+      list-style: none; user-select: none;
+    }
+    .step-details-toggle::-webkit-details-marker { display: none; }
+    .step-details-toggle::before { content: '▸ '; font-size: 0.65rem; }
+    details[open] .step-details-toggle::before { content: '▾ '; }
+    .step-explain-body { margin-top: 6px; padding-top: 6px; border-top: 1px solid #1E2D3A; }
+
+    /* ── Canvas election button (absolute overlay on canvas stage) ── */
+    .canvas-election-btn {
+      position: absolute;
+      display: none;
+      background: #1A0E30;
+      border: 1.5px solid #B07AFF;
+      color: #C090FF;
+      border-radius: 8px;
+      padding: 5px 14px 6px;
+      font-size: 0.8rem;
+      font-weight: 700;
+      cursor: pointer;
+      transform: translateX(-50%);
+      z-index: 10;
+      white-space: nowrap;
+      line-height: 1.3;
+    }
+    .canvas-election-btn:hover { background: #2A1850; border-color: #C090FF; color: #D0A8FF; }
+    .canvas-election-btn .raft-hint {
+      display: block;
+      font-size: 0.6rem;
+      font-weight: 400;
+      color: #7040AA;
+      text-align: center;
+      margin-top: 1px;
+    }
 
     /* ── Log ── */
     .log-card { width: 100%; max-width: 1200px; }
@@ -270,8 +289,8 @@
         <div class="step-title" id="write-step-title"></div>
         <div class="step-explain" id="write-step-explain"><span class="step-panel-idle">Start a write to step through the replication flow.</span></div>
         <div class="step-actions">
-          <button id="btn-write-next" onclick="advanceWriteStep()" disabled>Next →</button>
-          <button class="sec" id="btn-write-finish" onclick="autoFinishWrite()" disabled>Finish ▶▶</button>
+          <button id="btn-write-next" onclick="handleWritePanelNext()" disabled>Next →</button>
+          <button class="sec" id="btn-write-finish" onclick="handleWritePanelFinish()" disabled>Finish ▶▶</button>
         </div>
       </div>
 
@@ -294,33 +313,6 @@
         <div class="step-actions">
           <button class="read-btn" id="btn-read-next" onclick="advanceReadStep()" disabled>Next →</button>
           <button class="sec" id="btn-read-finish" onclick="autoFinishRead()" disabled>Finish ▶▶</button>
-        </div>
-      </div>
-
-      <div class="step-panel election-step-panel" id="election-step-panel">
-        <div class="panel-start">
-          <button class="election-btn" id="btn-election-start" onclick="handleElection()" disabled
-            title="Take the primary offline first (click the Primary node on the canvas)">Trigger Election ⚡</button>
-          <div class="raft-info">
-            <span class="raft-badge">ⓘ RAFT</span>
-            <div class="raft-tooltip">
-              <strong>How MongoDB elections work (RAFT)</strong><br><br>
-              When secondaries stop receiving heartbeats, they wait <em>electionTimeoutMillis</em> (default 10 s) then start an election.<br><br>
-              Each node votes for the candidate with the <strong>most up-to-date oplog</strong> (highest term + timestamp). A candidate that collects a <strong>majority of votes</strong> wins and becomes primary.<br><br>
-              Uncommitted writes on the old primary are rolled back, preserving safety.
-            </div>
-          </div>
-        </div>
-        <div class="step-meta">
-          <span class="step-label election-label">ELECTION</span>
-          <span class="step-badge" id="election-step-badge"></span>
-          <div class="step-dots" id="election-step-dots"></div>
-        </div>
-        <div class="step-title" id="election-step-title"></div>
-        <div class="step-explain" id="election-step-explain"><span class="step-panel-idle">Take the primary offline, then trigger an election to see how MongoDB selects a new primary.</span></div>
-        <div class="step-actions">
-          <button id="btn-election-next" onclick="advanceElectionStep()" disabled>Next →</button>
-          <button class="sec" id="btn-election-finish" onclick="autoFinishElection()" disabled>Finish ▶▶</button>
         </div>
       </div>
 
@@ -361,6 +353,12 @@
   <div class="consistency-overlay read-overlay" id="reader-consistency">
     <div class="cb-dim">No reads completed</div>
   </div>
+  <!-- Canvas-contextual election trigger — positioned via JS below the dead primary -->
+  <button id="btn-canvas-election" class="canvas-election-btn" onclick="handleElection()"
+    title="Uses RAFT consensus: secondaries vote for the candidate with the most up-to-date oplog. A majority wins and becomes the new primary. Uncommitted writes on the old primary are rolled back.">
+    ⚡ Trigger Election
+    <span class="raft-hint">ⓘ RAFT consensus — hover for details</span>
+  </button>
   <canvas id="canvas"></canvas>
 </div>
 

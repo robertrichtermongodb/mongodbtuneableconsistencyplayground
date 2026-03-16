@@ -486,6 +486,14 @@ function buildElectionSteps() {
         n.docVersionId = Math.min(n.docVersionId || 0, state.doc.majorityCommitId);
       });
 
+      // Invalidate any snapshot session locked at a now-rolled-back version
+      if (state.readClient.sessionActive &&
+          state.readClient.sessionSnapshotId > state.doc.majorityCommitId) {
+        state.readClient.sessionActive = false;
+        state.readClient.sessionSnapshotId = null;
+        log('Snapshot session invalidated — locked version was rolled back.', 'warn');
+      }
+
       // Reset phases
       Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
 

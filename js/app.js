@@ -92,16 +92,25 @@ function resetElectionVisual() {
   electionEngine.done = false; electionEngine.idx = -1; electionEngine.aborted = false;
   electionEngine._waitResolve = null; electionEngine.busy = false; electionEngine.steps = [];
   if (_autoFinishElectionId) { clearInterval(_autoFinishElectionId); _autoFinishElectionId = null; }
-  showStepPanel(-1, electionEngine, 'election-step-panel');
+  // Remove election-mode class and restore write panel to its idle state
+  const writePanelEl = document.getElementById('write-step-panel');
+  if (writePanelEl) {
+    writePanelEl.classList.remove('election-mode');
+    const lbl = writePanelEl.querySelector('.step-label');
+    if (lbl) lbl.textContent = 'WRITE';
+  }
+  showStepPanel(-1, writeEngine, 'write-step-panel');
 }
 
 function handleElection() {
   if (electionEngine.busy || (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted)) return;
   resetElectionVisual();
   resetWriteVisual();
+  resetReadVisual();
   draw();
   log('─── Election triggered ───', 'warn');
-  runEngine(buildElectionSteps(), electionEngine, 'election-step-panel');
+  // Election steps display in the write panel (writes are blocked during election)
+  runEngine(buildElectionSteps(), electionEngine, 'write-step-panel');
 }
 
 function resetScenario() {
@@ -226,14 +235,14 @@ canvas.addEventListener('click', e => {
     state.nodes[hit.key].alive = !state.nodes[hit.key].alive;
     const n = state.nodes[hit.key];
     log(`${n.label} ${n.alive ? 'brought online' : 'taken down'} — document state preserved.`, n.alive ? 'ok' : 'warn');
-    resetWriteVisual(); resetReadVisual();
+    resetWriteVisual(); resetReadVisual(); resetElectionVisual();
   } else if (hit.type === 'link') {
     const lk = getLinkBetween(state.primaryKey, hit.key);
     if (lk) {
       state.links[lk] = !state.links[lk];
       const label = `${state.nodes[state.primaryKey].label} \u2194 ${state.nodes[hit.key].label}`;
       log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} — document state preserved.`, state.links[lk] ? 'ok' : 'warn');
-      resetWriteVisual(); resetReadVisual();
+      resetWriteVisual(); resetReadVisual(); resetElectionVisual();
     }
   } else if (hit.type === 'clientLink') {
     if (hit.key === 'wp') {
