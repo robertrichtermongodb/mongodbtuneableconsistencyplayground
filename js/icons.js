@@ -23,15 +23,3 @@ const ICON_RS = new Path2D(
   'M9.75 4.5C9.75 5.4665 8.9665 6.25 8 6.25C7.0335 6.25 6.25 5.4665 6.25 4.5' +
   'C6.25 3.5335 7.0335 2.75 8 2.75C8.9665 2.75 9.75 3.5335 9.75 4.5Z'
 );
-
-// ctx is a global defined in draw.js — safe to reference here since drawIcon
-// is only ever called after all scripts are loaded.
-function drawIcon(path, cx, cy, size, color, viewSize = 16) {
-  const s = size / viewSize;
-  ctx.save();
-  ctx.translate(cx - size / 2, cy - size / 2);
-  ctx.scale(s, s);
-  ctx.fillStyle = color;
-  ctx.fill(path);
-  ctx.restore();
-}

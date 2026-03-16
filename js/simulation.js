@@ -9,25 +9,6 @@ function canAchieve(w) {
   return count >= (w === 'majority' ? 2 : w);
 }
 
-function resolveReadTarget(rc, readPref) {
-  const pk = state.primaryKey;
-  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
-  if (rc === 'linearizable') return pk;
-  if (readPref === 'primary')
-    return state.nodes[pk].alive ? pk : null;
-  if (readPref === 'primaryPreferred') {
-    if (state.nodes[pk].alive) return pk;
-    return secKeys.find(k => state.nodes[k].alive) || null;
-  }
-  if (readPref === 'secondary')
-    return secKeys.slice().reverse().find(k => state.nodes[k].alive) || null;
-  if (readPref === 'secondaryPreferred') {
-    const s = secKeys.find(k => state.nodes[k].alive);
-    return s || (state.nodes[pk].alive ? pk : null);
-  }
-  return pk;
-}
-
 // ═══════════════════════════════════════
 // BUILD WRITE STEPS
 // ═══════════════════════════════════════
@@ -172,7 +153,6 @@ function buildWriteSteps(w, j) {
     return steps;
   }
 
-  // Achievable: required replications → ACK → async replications
   const required  = reachableSecs.slice(0, secsNeeded);
   const asyncSecs = reachableSecs.slice(secsNeeded);
 
@@ -235,7 +215,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
   const reachableCount = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
   const majorityOk = reachableCount >= 2;
 
-  // Pre-compute what this read will serve (at build time = snapshot of current state)
   const served = (rc === 'snapshot' && snapshotOverrideId !== null)
     ? { id: snapshotOverrideId, dirty: false }
     : (targetKey && target && target.alive ? getServedVersion(targetKey, rc) : { id: 0, dirty: false });
@@ -269,7 +248,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     },
   });
 
-  // ── no target ──
   if (!target || !target.alive) {
     steps.push({
       title: 'No eligible node — read fails',
@@ -281,7 +259,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     return steps;
   }
 
-  // ── rc-specific ──
   if (rc === 'local' || rc === 'available') {
     const nodeVer = target.docVersionId;
     const nodeLabel = nodeVer > 0 ? `v${nodeVer}` : 'none';
@@ -433,7 +410,6 @@ function readPrefLabel(p) {
 // ═══════════════════════════════════════
 function buildElectionSteps() {
   const pk = state.primaryKey;
-  // Eligible candidates: alive nodes that are not the current primary
   const candidates = Object.keys(state.nodes)
     .filter(k => k !== pk && state.nodes[k].alive)
     .sort((a, b) => (state.nodes[b].docVersionId || 0) - (state.nodes[a].docVersionId || 0));
@@ -450,7 +426,6 @@ function buildElectionSteps() {
   const winnerNode = state.nodes[winner];
   const steps      = [];
 
-  // Step 1 — election campaign
   steps.push({
     title: `Election triggered — ${winnerNode.label} campaigns`,
     explain: `Secondaries stop receiving heartbeats from the primary and start an election after <strong>electionTimeoutMillis</strong> (default 10 s). ` +
@@ -463,7 +438,6 @@ function buildElectionSteps() {
     },
   });
 
-  // Step 2 — election complete + rollback uncommitted
   const uncommitted = state.doc.versions.filter(v => v.id > state.doc.majorityCommitId);
   const rollbackNote = uncommitted.length > 0
     ? ` <strong>Uncommitted write(s) ${uncommitted.map(v => `v${v.id}`).join(', ')} are rolled back</strong> — they were never majority-confirmed, so RAFT discards them on the new primary. Any client that already read these values via rc:local now holds stale data.`
@@ -473,20 +447,17 @@ function buildElectionSteps() {
     title: `${winnerNode.label} elected — new Primary`,
     explain: `Election complete. <strong>${winnerNode.label}</strong> wins after collecting a majority of votes and is now the primary.${rollbackNote} Majority-committed data (v${state.doc.majorityCommitId || 'none'}) is intact on all surviving nodes.`,
     run: async () => {
-      // Promote winner
       state.primaryKey = winner;
       const oldLabel = winnerNode.label;
       winnerNode.label = 'Primary';
       state.nodes[pk].label = 'Old Primary';
 
-      // Roll back writes that were never majority-committed
       state.doc.versions = state.doc.versions.filter(v => v.id <= state.doc.majorityCommitId);
       state.doc.latestId = state.doc.majorityCommitId;
       Object.values(state.nodes).forEach(n => {
         n.docVersionId = Math.min(n.docVersionId || 0, state.doc.majorityCommitId);
       });
 
-      // Invalidate any snapshot session locked at a now-rolled-back version
       if (state.readClient.sessionActive &&
           state.readClient.sessionSnapshotId > state.doc.majorityCommitId) {
         state.readClient.sessionActive = false;
@@ -494,7 +465,6 @@ function buildElectionSteps() {
         log('Snapshot session invalidated — locked version was rolled back.', 'warn');
       }
 
-      // Reset phases
       Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
 
       if (uncommitted.length > 0) {

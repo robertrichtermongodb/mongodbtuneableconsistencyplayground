@@ -80,6 +80,9 @@ function getServedVersion(nodeKey, rc) {
 }
 
 function advanceMajorityCommit() {
+  // Scans from the latest version backward. MongoDB commits are cumulative: if vN is
+  // majority-confirmed, all prior versions are implicitly committed too, so we stop at
+  // the first (highest) version that has ≥2 acks.
   for (let i = state.doc.versions.length - 1; i >= 0; i--) {
     const v = state.doc.versions[i];
     if (v.ackedBy.size >= 2 && v.id > state.doc.majorityCommitId) {
@@ -87,4 +90,25 @@ function advanceMajorityCommit() {
       break;
     }
   }
+}
+
+// Resolves which node should serve a read given rc and readPreference.
+// Lives here (not simulation.js) because both draw.js and simulation.js need it.
+function resolveReadTarget(rc, readPref) {
+  const pk = state.primaryKey;
+  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
+  if (rc === 'linearizable') return pk;
+  if (readPref === 'primary')
+    return state.nodes[pk].alive ? pk : null;
+  if (readPref === 'primaryPreferred') {
+    if (state.nodes[pk].alive) return pk;
+    return secKeys.find(k => state.nodes[k].alive) || null;
+  }
+  if (readPref === 'secondary')
+    return secKeys.slice().reverse().find(k => state.nodes[k].alive) || null;
+  if (readPref === 'secondaryPreferred') {
+    const s = secKeys.find(k => state.nodes[k].alive);
+    return s || (state.nodes[pk].alive ? pk : null);
+  }
+  return pk;
 }

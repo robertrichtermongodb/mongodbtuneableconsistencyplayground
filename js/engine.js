@@ -1,13 +1,20 @@
 // ═══════════════════════════════════════
 // ENGINES
 // ═══════════════════════════════════════
-const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
-const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
-const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false };
+const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null };
+const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null };
+const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null };
 
 function abortEngine(eng) {
   eng.aborted = true;
   if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
+}
+
+// Centralised engine field reset — clears all engine state and cancels any auto-finish timer.
+function resetEngine(eng) {
+  eng.done = false; eng.idx = -1; eng.aborted = false;
+  eng._waitResolve = null; eng.busy = false; eng.steps = [];
+  if (eng._autoFinishId) { clearInterval(eng._autoFinishId); eng._autoFinishId = null; }
 }
 
 
@@ -30,8 +37,7 @@ function syncButtons() {
     }
   }
 
-  // Write start button
-  const isFirstWrite = typeof state !== 'undefined' && state.doc.latestId === 0;
+  const isFirstWrite = state.doc.latestId === 0;
   const btnWS = document.getElementById('btn-write-start');
   btnWS.textContent = we.aborted ? 'Retry' : isFirstWrite ? 'New doc with ID 1' : 'Update doc with ID 1';
   btnWS.disabled    = writeActive || electionActive;
@@ -39,7 +45,6 @@ function syncButtons() {
               : writeActive    ? 'Write already in progress — finish or reset first'
               : '';
 
-  // Write/election Next + Finish — controlled by whichever engine is active
   const activeEng  = electionActive ? ee : we;
   const wnDis = activeEng.busy || activeEng._waitResolve === null;
   document.getElementById('btn-write-next').disabled   = wnDis;
@@ -50,7 +55,7 @@ function syncButtons() {
   btnRS.textContent = re.aborted ? 'Retry' : 'Query doc with ID 1';
   btnRS.disabled    = readActive;
   btnRS.title = readActive ? 'Read already in progress — finish or reset first' : '';
-  if (typeof updateReadActionControls === 'function') updateReadActionControls();
+  updateReadActionControls();
 
   const btnSnapStart = document.getElementById('btn-read-session-start');
   const btnSnapAgain = document.getElementById('btn-read-session-again');
@@ -84,7 +89,7 @@ function syncButtons() {
 
   // ── Canvas election button — contextual overlay near dead primary ──
   const canvasBtnEl = document.getElementById('btn-canvas-election');
-  if (canvasBtnEl && typeof state !== 'undefined') {
+  if (canvasBtnEl) {
     const pk = state.primaryKey;
     const pNode = state.nodes[pk];
     const primaryDown   = !state.nodes[pk].alive;
@@ -92,7 +97,6 @@ function syncButtons() {
     const show = primaryDown && hasCandidates && !electionActive && !writeActive && !readActive;
     canvasBtnEl.style.display = show ? 'block' : 'none';
     if (show) {
-      // pNode.x/y are CSS pixels within the canvas; canvas sits at padding=14px inside .stage
       canvasBtnEl.style.left = (14 + pNode.x) + 'px';
       canvasBtnEl.style.top  = (14 + pNode.y + 52 + 18) + 'px'; // NR=52, 18px gap
     }
@@ -100,7 +104,6 @@ function syncButtons() {
 }
 
 // ── Write panel Next/Finish smart wrappers ──
-// When election is running, these advance the election engine instead of the write engine.
 function handleWritePanelNext() {
   const ee = electionEngine;
   if (ee.idx !== -1 && !ee.done && !ee.aborted) advanceElectionStep();
@@ -115,47 +118,27 @@ function handleWritePanelFinish() {
 function advanceWriteStep() {
   if (writeEngine._waitResolve) { const r = writeEngine._waitResolve; writeEngine._waitResolve = null; r(); }
 }
-
-let _autoFinishId = null;
-function autoFinishWrite() {
-  if (writeEngine.done || writeEngine.idx === -1 || _autoFinishId) return;
-  _autoFinishId = setInterval(() => {
-    if (writeEngine.done || writeEngine.idx === -1) {
-      clearInterval(_autoFinishId); _autoFinishId = null; return;
-    }
-    if (writeEngine._waitResolve && !writeEngine.busy) advanceWriteStep();
-  }, 120);
-}
-
-let _autoFinishReadId = null;
-function autoFinishRead() {
-  if (readEngine.done || readEngine.idx === -1 || _autoFinishReadId) return;
-  _autoFinishReadId = setInterval(() => {
-    if (readEngine.done || readEngine.idx === -1) {
-      clearInterval(_autoFinishReadId); _autoFinishReadId = null; return;
-    }
-    if (readEngine._waitResolve && !readEngine.busy) advanceReadStep();
-  }, 120);
-}
-
 function advanceReadStep() {
   if (readEngine._waitResolve) { const r = readEngine._waitResolve; readEngine._waitResolve = null; r(); }
 }
-
 function advanceElectionStep() {
   if (electionEngine._waitResolve) { const r = electionEngine._waitResolve; electionEngine._waitResolve = null; r(); }
 }
 
-let _autoFinishElectionId = null;
-function autoFinishElection() {
-  if (electionEngine.done || electionEngine.idx === -1 || _autoFinishElectionId) return;
-  _autoFinishElectionId = setInterval(() => {
-    if (electionEngine.done || electionEngine.idx === -1) {
-      clearInterval(_autoFinishElectionId); _autoFinishElectionId = null; return;
+// Shared auto-finish implementation — drives an engine to completion at 120ms intervals.
+function _autoFinish(eng, advanceFn) {
+  if (eng.done || eng.idx === -1 || eng._autoFinishId) return;
+  eng._autoFinishId = setInterval(() => {
+    if (eng.done || eng.idx === -1) {
+      clearInterval(eng._autoFinishId); eng._autoFinishId = null; return;
     }
-    if (electionEngine._waitResolve && !electionEngine.busy) advanceElectionStep();
+    if (eng._waitResolve && !eng.busy) advanceFn();
   }, 120);
 }
+
+function autoFinishWrite()    { _autoFinish(writeEngine,    advanceWriteStep); }
+function autoFinishRead()     { _autoFinish(readEngine,     advanceReadStep); }
+function autoFinishElection() { _autoFinish(electionEngine, advanceElectionStep); }
 
 async function waitForClick(eng) {
   if (eng.mode === 'auto') return;
@@ -167,27 +150,33 @@ const IDLE_HINT = {
   'read-step-panel':  'Probe the replica set to observe read concern behaviour.',
 };
 
+// Explicit DOM ID map — avoids fragile string-manipulation to derive IDs from panel names.
+const PANEL_EL_IDS = {
+  'write-step-panel': { badge: 'write-step-badge', title: 'write-step-title', explain: 'write-step-explain', dots: 'write-step-dots' },
+  'read-step-panel':  { badge: 'read-step-badge',  title: 'read-step-title',  explain: 'read-step-explain',  dots: 'read-step-dots'  },
+};
+
 function showStepPanel(i, eng, panelId) {
-  // When election uses the write panel, use the actual write panel DOM element IDs
-  const prefix = panelId.replace(/-panel$/, '');
+  const ids = PANEL_EL_IDS[panelId];
+  if (!ids) return;
   if (i < 0 || eng.steps.length === 0) {
-    document.getElementById(prefix + '-badge').textContent = '';
-    document.getElementById(prefix + '-title').textContent = '';
-    document.getElementById(prefix + '-explain').innerHTML =
+    document.getElementById(ids.badge).textContent = '';
+    document.getElementById(ids.title).textContent = '';
+    document.getElementById(ids.explain).innerHTML =
       `<span class="step-panel-idle">${IDLE_HINT[panelId] || ''}</span>`;
-    document.getElementById(prefix + '-dots').innerHTML = '';
+    document.getElementById(ids.dots).innerHTML = '';
     return;
   }
   const s = eng.steps[i];
-  document.getElementById(prefix + '-badge').textContent  = `Step ${i+1} of ${eng.steps.length}`;
-  document.getElementById(prefix + '-title').textContent  = s.title;
-  // Explain text is collapsible — collapsed by default, user clicks to expand
-  document.getElementById(prefix + '-explain').innerHTML  =
-    `<details class="step-details">` +
+  document.getElementById(ids.badge).textContent  = `Step ${i+1} of ${eng.steps.length}`;
+  document.getElementById(ids.title).textContent  = s.title;
+  // Explain text is expanded by default; user can collapse via the <details> toggle.
+  document.getElementById(ids.explain).innerHTML  =
+    `<details class="step-details" open>` +
     `<summary class="step-details-toggle">Details</summary>` +
     `<div class="step-explain-body">${s.explain}</div>` +
     `</details>`;
-  const dotsEl = document.getElementById(prefix + '-dots');
+  const dotsEl = document.getElementById(ids.dots);
   dotsEl.innerHTML = '';
   eng.steps.forEach((_, j) => {
     const d = document.createElement('div');

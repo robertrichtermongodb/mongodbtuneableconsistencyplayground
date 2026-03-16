@@ -1,25 +1,15 @@
 // ═══════════════════════════════════════
-// LOG
-// ═══════════════════════════════════════
-const logEl = document.getElementById('log');
-function log(msg, cls = 'info') {
-  const el = document.createElement('div');
-  el.className = cls;
-  el.textContent = `[${new Date().toLocaleTimeString()}]  ${msg}`;
-  logEl.prepend(el);
-}
-
-// ═══════════════════════════════════════
 // MAIN ACTIONS
 // ═══════════════════════════════════════
 function handleWrite() {
   if (writeEngine.busy || (writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted)) return;
   resetWriteVisual();
   draw();
-  const w  = resolveW(document.getElementById('sel-w').value);
+  const w  = document.getElementById('sel-w').value;
+  const wResolved = w === 'majority' ? 'majority' : parseInt(w, 10);
   const j  = document.getElementById('sel-j').value === 'true';
-  log(`─── Write: w:${w}, j:${j} ───`, 'info');
-  runEngine(buildWriteSteps(w, j), writeEngine, 'write-step-panel');
+  log(`─── Write: w:${wResolved}, j:${j} ───`, 'info');
+  runEngine(buildWriteSteps(wResolved, j), writeEngine, 'write-step-panel');
 }
 
 function handleRead() {
@@ -68,9 +58,7 @@ function resetWriteVisual() {
   state.particles = [];
   Object.values(state.nodes).forEach(n => { n.phase = 'idle'; });
   state.writeClient.phase = 'idle';
-  writeEngine.done = false; writeEngine.idx = -1; writeEngine.aborted = false;
-  writeEngine._waitResolve = null; writeEngine.busy = false; writeEngine.steps = [];
-  if (_autoFinishId) { clearInterval(_autoFinishId); _autoFinishId = null; }
+  resetEngine(writeEngine);
   showStepPanel(-1, writeEngine, 'write-step-panel');
 }
 
@@ -82,17 +70,12 @@ function resetReadVisual(opts = {}) {
     state.readClient.sessionActive = false;
     state.readClient.sessionSnapshotId = null;
   }
-  readEngine.done = false; readEngine.idx = -1; readEngine.aborted = false;
-  readEngine._waitResolve = null; readEngine.busy = false; readEngine.steps = [];
-  if (_autoFinishReadId) { clearInterval(_autoFinishReadId); _autoFinishReadId = null; }
+  resetEngine(readEngine);
   showStepPanel(-1, readEngine, 'read-step-panel');
 }
 
 function resetElectionVisual() {
-  electionEngine.done = false; electionEngine.idx = -1; electionEngine.aborted = false;
-  electionEngine._waitResolve = null; electionEngine.busy = false; electionEngine.steps = [];
-  if (_autoFinishElectionId) { clearInterval(_autoFinishElectionId); _autoFinishElectionId = null; }
-  // Remove election-mode class and restore write panel to its idle state
+  resetEngine(electionEngine);
   const writePanelEl = document.getElementById('write-step-panel');
   if (writePanelEl) {
     writePanelEl.classList.remove('election-mode');
@@ -109,7 +92,6 @@ function handleElection() {
   resetReadVisual();
   draw();
   log('─── Election triggered ───', 'warn');
-  // Election steps display in the write panel (writes are blocked during election)
   runEngine(buildElectionSteps(), electionEngine, 'write-step-panel');
 }
 
@@ -123,104 +105,6 @@ function resetScenario() {
   draw();
   syncButtons();
   log('Scenario reset — all nodes healthy, all links connected, document cleared.', 'info');
-}
-
-// ═══════════════════════════════════════
-// CONSISTENCY PERSPECTIVE VIEWS
-// ═══════════════════════════════════════
-function updateConsistencyViews() {
-  const wBox = document.getElementById('writer-consistency');
-  const rBox = document.getElementById('reader-consistency');
-  const doc  = state.doc;
-
-  // ── Writer perspective ──
-  if (doc.latestId === 0) {
-    wBox.innerHTML = '<div class="cb-dim">No writes issued</div>';
-  } else {
-    const vid = doc.latestId;
-    const committed = vid <= doc.majorityCommitId;
-    const version = doc.versions.find(v => v.id === vid);
-    const ackCount = version ? version.ackedBy.size : 0;
-    const wc = state.writeClient;
-    const wVal = document.getElementById('sel-w').value;
-
-    if (wc.phase === 'error') {
-      wBox.innerHTML =
-        `<div class="cb-label">Write v${vid}</div>` +
-        `<div class="cb-status cb-error">\u26A0 Write concern failed</div>` +
-        `<div class="cb-detail">w:${wVal} not satisfied. Data on primary but unconfirmed. Rollback risk if primary fails.</div>`;
-    } else if (committed) {
-      wBox.innerHTML =
-        `<div class="cb-label">Write v${vid}</div>` +
-        `<div class="cb-status cb-ok">\u25C9 Majority-committed</div>` +
-        `<div class="cb-detail">Durable \u2014 survives any minority node failure. ${ackCount} node(s) confirmed.</div>`;
-    } else if (wVal === '0') {
-      wBox.innerHTML =
-        `<div class="cb-label">Write v${vid}</div>` +
-        `<div class="cb-status cb-warn">\u25CE Fire-and-forget</div>` +
-        `<div class="cb-detail">w:0 \u2014 no ACK requested. Durability unknown to client.</div>`;
-    } else {
-      wBox.innerHTML =
-        `<div class="cb-label">Write v${vid}</div>` +
-        `<div class="cb-status cb-warn">\u25CE In-flight \u2014 ${ackCount}/2 majority</div>` +
-        `<div class="cb-detail">Not yet majority-committed. Rollback risk if primary fails before majority.</div>`;
-    }
-  }
-
-  // ── Reader perspective ──
-  const rc = state.readClient;
-  const rcVal = document.getElementById('sel-rc').value;
-  const sessionLabel = rc.sessionActive
-    ? (rc.sessionSnapshotId > 0 ? `v${rc.sessionSnapshotId}` : 'none')
-    : null;
-  const sessionSuffix = sessionLabel !== null ? ` Session locked at ${sessionLabel}.` : '';
-
-  if (rc.lastReceivedVersion === null && rc.phase === 'idle') {
-    rBox.innerHTML = '<div class="cb-dim">No reads completed</div>';
-  } else if (rc.phase === 'waiting') {
-    rBox.innerHTML =
-      `<div class="cb-label">Reading\u2026</div>` +
-      `<div class="cb-status" style="color:#7EC8E3">rc:${rcVal}</div>` +
-      `<div class="cb-detail">Request in progress.${sessionSuffix}</div>`;
-  } else if (rc.phase === 'error') {
-    rBox.innerHTML =
-      `<div class="cb-label">Read failed</div>` +
-      `<div class="cb-status cb-error">\u26A0 No eligible node</div>` +
-      `<div class="cb-detail">The target node is unavailable. Read cannot be served.${sessionSuffix}</div>`;
-  } else if (rc.lastReceivedVersion !== null) {
-    const v = rc.lastReceivedVersion;
-    const vStr = v.id > 0 ? `v${v.id}` : 'none';
-
-    if (v.id === 0) {
-      const reason = (rcVal === 'local' || rcVal === 'available')
-        ? 'Node has no data yet.'
-        : `No majority-committed data exists (latest v${doc.latestId} still in-flight).`;
-      rBox.innerHTML =
-        `<div class="cb-label">Read result: none</div>` +
-        `<div class="cb-status cb-dim">No data returned</div>` +
-        `<div class="cb-detail">rc:${rcVal} \u2014 ${reason}${sessionSuffix}</div>`;
-    } else if (v.dirty) {
-      rBox.innerHTML =
-        `<div class="cb-label">Read result: ${vStr}</div>` +
-        `<div class="cb-status cb-warn">\u25CE Dirty read \u2014 uncommitted</div>` +
-        `<div class="cb-detail">rc:${rcVal} returned data above majority-commit (v${doc.majorityCommitId || 'none'}). If primary fails, this write may roll back.${sessionSuffix}</div>`;
-    } else {
-      rBox.innerHTML =
-        `<div class="cb-label">Read result: ${vStr}</div>` +
-        `<div class="cb-status cb-ok">\u25C9 Safe \u2014 majority-confirmed</div>` +
-        `<div class="cb-detail">rc:${rcVal} guarantees this data will not be rolled back.${sessionSuffix}</div>`;
-    }
-  }
-}
-
-function updateReadActionControls() {
-  const rcVal = document.getElementById('sel-rc')?.value;
-  const isSnapshot = rcVal === 'snapshot';
-  const btnDefault = document.getElementById('btn-read-start');
-  const snapWrap = document.getElementById('snapshot-session-actions');
-  if (!btnDefault || !snapWrap) return;
-  btnDefault.style.display = isSnapshot ? 'none' : '';
-  snapWrap.style.display = isSnapshot ? 'flex' : 'none';
 }
 
 // ═══════════════════════════════════════
@@ -271,12 +155,13 @@ canvas.addEventListener('mousemove', e => {
   const rect = canvas.getBoundingClientRect();
   const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
   canvas.style.cursor = hit ? 'pointer' : 'default';
-  const changed = (hoverTarget?.type !== hit?.type || hoverTarget?.key !== hit?.key);
-  if (changed) { hoverTarget = hit; draw(); }
+  const prev = getHoverTarget();
+  const changed = (prev?.type !== hit?.type || prev?.key !== hit?.key);
+  if (changed) { setHoverTarget(hit); draw(); }
 });
 
 canvas.addEventListener('mouseleave', () => {
-  if (hoverTarget) { hoverTarget = null; draw(); }
+  if (getHoverTarget()) { setHoverTarget(null); draw(); }
 });
 
 // ═══════════════════════════════════════
@@ -291,6 +176,7 @@ canvas.addEventListener('mouseleave', () => {
       state.readClient.sessionActive = false;
       state.readClient.sessionSnapshotId = null;
     }
+    state.links.rp = true;
     resetReadVisual();
     updateReadActionControls();
     draw();
@@ -299,10 +185,45 @@ canvas.addEventListener('mouseleave', () => {
 });
 window.addEventListener('resize', resizeCanvas);
 
+// Button event listeners
+document.getElementById('btn-reset').addEventListener('click', resetScenario);
+document.getElementById('btn-write-start').addEventListener('click', handleWrite);
+document.getElementById('btn-write-next').addEventListener('click', handleWritePanelNext);
+document.getElementById('btn-write-finish').addEventListener('click', handleWritePanelFinish);
+document.getElementById('btn-read-start').addEventListener('click', handleRead);
+document.getElementById('btn-read-session-start').addEventListener('click', handleSnapshotStart);
+document.getElementById('btn-read-session-again').addEventListener('click', handleSnapshotReadAgain);
+document.getElementById('btn-read-session-end').addEventListener('click', handleSnapshotEnd);
+document.getElementById('btn-read-next').addEventListener('click', advanceReadStep);
+document.getElementById('btn-read-finish').addEventListener('click', autoFinishRead);
+document.getElementById('btn-canvas-election').addEventListener('click', handleElection);
+document.getElementById('btn-dismiss-welcome').addEventListener('click', dismissWelcomePopup);
+document.getElementById('btn-dismiss-wip').addEventListener('click', dismissWipPopup);
+
+// ═══════════════════════════════════════
+// POPUPS
+// ═══════════════════════════════════════
+function dismissWelcomePopup() {
+  localStorage.setItem('tcp-welcome-seen', '1');
+  document.getElementById('welcome-overlay').classList.remove('visible');
+  document.getElementById('wip-overlay').classList.add('visible');
+}
+
+function dismissWipPopup() {
+  document.getElementById('wip-overlay').classList.remove('visible');
+}
+
+function initPopups() {
+  if (!localStorage.getItem('tcp-welcome-seen')) {
+    document.getElementById('welcome-overlay').classList.add('visible');
+  }
+}
+
 // ═══════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════
 resizeCanvas();
 updateReadActionControls();
 syncButtons();
+initPopups();
 log('Ready — click nodes/links to set topology, click client arrows to interrupt connections.', 'info');
