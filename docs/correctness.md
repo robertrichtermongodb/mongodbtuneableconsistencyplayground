@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Last updated 2026-04-07 against the official MongoDB documentation (MongoDB 8.0).*
+*Last updated 2026-03-15 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 14.*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -27,6 +27,10 @@ This document separates simulation behaviors into four categories:
 | w:majority + j:false — fully durable on default config | `createWriteMachine` | Explain text notes `writeConcernMajorityJournalDefault:true` overrides client j. |
 | Unachievable write concern blocks; write NOT rolled back | `createWriteMachine` | Explain text correctly describes wtimeout behavior. |
 | Dynamic topology adaptation during write | `createWriteMachine` | Machine re-evaluates live node liveness and link state on each `nextStep()` call, retargeting surviving secondaries when a node crashes or partitions mid-replication. |
+| j:false defers primary journal after ACK | `createWriteMachine` | Primary's journal flush happens after ACK for j:false (w≠majority), matching MongoDB's async journal behavior. |
+| j:false interleaves secondary journal per node | `createWriteMachine` | Each secondary completes memory apply + journal flush before the next secondary starts, avoiding misleading batch visualization. |
+| Primary bounce detection (data loss) | `createWriteMachine` | `primaryHasData()` detects when a restarted primary lost unjournaled data. Handles both pre-ACK (write fails) and post-ACK (async work aborted, "Acknowledged but LOST" state). |
+| "Acknowledged but LOST" UI state | `draw.js` | Detects `writeClient.phase === 'received' && ackCount === 0 && !committed` and displays explicit data-loss warning. |
 
 ### Read concerns
 
@@ -38,8 +42,10 @@ This document separates simulation behaviors into four categories:
 | rc:majority frozen when commit point can't advance | simulation.js | Detects `<2 reachable nodes`, returns frozen value. |
 | rc:majority frozen reads are stale but rollback-safe | simulation.js | Explain text distinguishes causal vs non-causal. |
 | rc:linearizable forces primary regardless of readPreference | state.js `resolveReadTarget` | Hardcoded `return pk`. |
-| rc:linearizable — primary confirms leadership before serving | simulation.js | Pings secondaries and waits for acks. |
-| rc:linearizable blocks when majority unreachable | simulation.js | Correctly recommends `maxTimeMS`. |
+| rc:linearizable — primary confirms leadership before serving | simulation.js | Pings secondaries and waits for acks. Runtime topology evaluation. |
+| rc:linearizable blocks when majority unreachable (runtime) | simulation.js | Majority check evaluated at step execution time, not build time. |
+| rc:linearizable returns fresh majorityCommitId at data-return time | simulation.js | `getServedVersion` called in `run()`, not at step-build time. |
+| rc:linearizable skips particles to dead secondaries | simulation.js | `alive` guard before ping/ack particle dispatch. |
 | rc:snapshot returns point-in-time majority-committed data | simulation.js | Returns `majorityCommitId` at time of read. |
 | rc:snapshot session locks a fixed point-in-time view | app.js | `sessionSnapshotId` captured once, reused on subsequent reads. |
 | Dirty read flagging (nodeVersion > majorityCommitId) | state.js, simulation.js | Correctly identifies the dirty read condition. |
@@ -81,6 +87,7 @@ This document separates simulation behaviors into four categories:
 |---|---|---|
 | Majority-commit is cumulative (vN committed implies all prior) | state.js `advanceMajorityCommit` | Scans backward, stops at first qualifying. |
 | Client disconnect aborts write engine cleanly | app.js canvas click handler | Engine aborted; no remaining steps execute. Server-side replication that was *already applied* to node state persists. |
+| Failed write rolls back `latestId` and version entry | simulation.js `failWrite` | Prevents stale UI state (e.g., "Update" button when no doc exists). |
 
 ---
 
@@ -126,13 +133,35 @@ This document separates simulation behaviors into four categories:
 
 ---
 
-### I5. `resolveReadTarget` ignores reader network reachability — Known limitation
+### ~~I5. rc:linearizable used stale topology and served values~~ ✅ Fixed
+
+**Problem:** `buildReadSteps` for rc:linearizable pre-computed `liveSecs`, `majorityOk`, and `served` at step-build time. If secondaries died between step-build and execution, the leadership check would still "succeed" using stale topology. The data-return step also used the build-time `majorityCommitId`, so a write completing during the leadership check would not be reflected in the result.
+
+**Fix:** Moved all three evaluations into the step `run()` functions:
+1. `liveSecs` is computed at runtime in the leadership ping step; dead nodes are skipped.
+2. `majorityOk` is re-evaluated at runtime in the leadership evaluation step; sets error if <2 reachable.
+3. `served` is computed at runtime in the data-return step via `getServedVersion()`.
+4. Data-return step checks `readClient.phase === 'error'` and skips if leadership was blocked.
+
+**Files:** `simulation.js` (linearizable section + data-return step in `buildReadSteps`).
+
+---
+
+### I6. `resolveReadTarget` ignores reader network reachability — Known limitation
 
 **Status:** Not fixed. Acknowledged as a model simplification.
 
 **Problem:** `resolveReadTarget` checks `node.alive` but not whether the reader can reach the specific node. The reader connection is modeled as a single `rp` boolean, not per-node.
 
 **Why deferred:** The `!state.links.rp` guard at the top of `buildReadSteps` catches total disconnection. Making this fully correct requires per-node reader links, which is a larger design change.
+
+### ~~I7. Failed write left stale `latestId` and orphan version entry~~ ✅ Fixed
+
+**Problem:** The send step optimistically set `state.doc.latestId = nextId` and pushed a version entry. If the write subsequently failed (primary crash), these were never rolled back — causing the UI to show "Update" instead of "New doc".
+
+**Fix:** Added rollback logic to `failWrite()` and `guardRun()` that removes the version entry and reverts `latestId` when a write errors out.
+
+**File:** `simulation.js` (`failWrite`, `guardRun`).
 
 ---
 
@@ -177,7 +206,7 @@ This document separates simulation behaviors into four categories:
 
 | Category | Count |
 |---|---|
-| Correct | ~31 behaviors (including 8 storage-layer + dynamic topology adaptation) |
-| ~~Incorrect~~ Fixed | 4 of 5 (I5 deferred as known limitation) |
+| Correct | ~40 behaviors (including 8 storage-layer + dynamic topology + 3 runtime linearizable + journal ordering + primary bounce + UI states) |
+| ~~Incorrect~~ Fixed | 7 of 8 (I6 deferred as known limitation) |
 | Imprecise | 11 |
 | Missing | 12 |

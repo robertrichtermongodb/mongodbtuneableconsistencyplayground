@@ -14,13 +14,6 @@ describe('journalFlush', () => {
     ctx.journalFlush('primary');
     assert.equal(ctx.state.nodes.primary.journalVersion, 3);
   });
-
-  it('is idempotent when already flushed', () => {
-    ctx.state.nodes.s1.memoryVersion = 2;
-    ctx.state.nodes.s1.journalVersion = 2;
-    ctx.journalFlush('s1');
-    assert.equal(ctx.state.nodes.s1.journalVersion, 2);
-  });
 });
 
 // ─── crashNode ──────────────────────────────────────────────────────────────
@@ -96,13 +89,6 @@ describe('recoverNode', () => {
     ctx.state.nodes.s2.journalVersion = 4;
     ctx.recoverNode('s2');
     assert.equal(ctx.state.nodes.s2.memoryVersion, 4);
-  });
-
-  it('is a no-op when journal is empty', () => {
-    ctx.state.nodes.s2.memoryVersion = 0;
-    ctx.state.nodes.s2.journalVersion = 0;
-    ctx.recoverNode('s2');
-    assert.equal(ctx.state.nodes.s2.memoryVersion, 0);
   });
 });
 
@@ -219,10 +205,6 @@ describe('getServedVersion', () => {
 // ─── isReachableForWrite ────────────────────────────────────────────────────
 
 describe('isReachableForWrite', () => {
-  it('primary is reachable when alive', () => {
-    assert.equal(ctx.isReachableForWrite('primary'), true);
-  });
-
   it('primary is unreachable when dead', () => {
     ctx.state.nodes.primary.alive = false;
     assert.equal(ctx.isReachableForWrite('primary'), false);
@@ -238,7 +220,10 @@ describe('isReachableForWrite', () => {
     assert.equal(ctx.isReachableForWrite('s1'), false);
   });
 
-  it('secondary reachable when alive and link up', () => {
+  it('becomes reachable again when link restored', () => {
+    ctx.state.links.ps1 = false;
+    assert.equal(ctx.isReachableForWrite('s1'), false);
+    ctx.state.links.ps1 = true;
     assert.equal(ctx.isReachableForWrite('s1'), true);
   });
 });

@@ -45,23 +45,17 @@ function syncButtons() {
   const btnWS = document.getElementById('btn-write-start');
   btnWS.textContent = we.aborted ? 'Retry' : isFirstWrite ? 'New doc with ID 1' : 'Update doc with ID 1';
   btnWS.disabled    = writeActive || electionActive;
-  btnWS.title = electionActive ? 'Election in progress — wait for it to complete'
-              : writeActive    ? 'Write already in progress — finish or reset first'
-              : '';
 
   const activeEng  = electionActive ? ee : we;
   const wnDis = activeEng.busy || activeEng._waitResolve === null;
   document.getElementById('btn-write-next').disabled   = wnDis;
   const wfDis = activeEng.idx === -1 || activeEng._waitResolve === null;
-  const btnWF = document.getElementById('btn-write-finish');
-  btnWF.disabled = wfDis;
-  btnWF.title = activeEng.idx === -1 ? 'Start a write first' : '';
+  document.getElementById('btn-write-finish').disabled = wfDis;
 
   // ── Read panel ──
   const btnRS = document.getElementById('btn-read-start');
   btnRS.textContent = re.aborted ? 'Retry' : 'Query doc with ID 1';
   btnRS.disabled    = readActive;
-  btnRS.title = readActive ? 'Read already in progress — finish or reset first' : '';
   updateReadActionControls();
 
   const btnSnapStart = document.getElementById('btn-read-session-start');
@@ -70,32 +64,24 @@ function syncButtons() {
   if (btnSnapStart && btnSnapAgain && btnSnapEnd) {
     const sessionActive = !!state.readClient.sessionActive;
     btnSnapStart.disabled = readActive || sessionActive;
-    btnSnapStart.title    = readActive    ? 'Read in progress — finish first'
-                          : sessionActive ? 'End the current session first' : '';
     btnSnapAgain.disabled = readActive || !sessionActive;
-    btnSnapAgain.title    = readActive     ? 'Read in progress — finish first'
-                          : !sessionActive ? 'Start a session first' : '';
     btnSnapEnd.disabled   = readActive || !sessionActive;
-    btnSnapEnd.title      = !sessionActive ? 'No active session' : '';
   }
 
   const rnDis = re.busy || re._waitResolve === null;
   document.getElementById('btn-read-next').disabled   = rnDis;
-  const rfDis = re.idx === -1 || re._waitResolve === null;
-  const btnRF = document.getElementById('btn-read-finish');
-  btnRF.disabled = rfDis;
-  btnRF.title = re.idx === -1 ? 'Start a read first' : '';
+  document.getElementById('btn-read-finish').disabled  = re.idx === -1 || re._waitResolve === null;
 
   // ── Lock dropdowns ──
   const selW = document.getElementById('sel-w');
   const selJ = document.getElementById('sel-j');
-  if (selW) { selW.disabled = writeActive; selW.title = writeActive ? 'Cannot change while a write is in progress' : ''; }
-  if (selJ) { selJ.disabled = writeActive; selJ.title = writeActive ? 'Cannot change while a write is in progress' : ''; }
+  if (selW) selW.disabled = writeActive;
+  if (selJ) selJ.disabled = writeActive;
 
   const selRC = document.getElementById('sel-rc');
   const selRP = document.getElementById('sel-readpref');
-  if (selRC) { selRC.disabled = readActive; selRC.title = readActive ? 'Cannot change while a read is in progress' : ''; }
-  if (selRP) { selRP.disabled = readActive; selRP.title = readActive ? 'Cannot change while a read is in progress' : ''; }
+  if (selRC) selRC.disabled = readActive;
+  if (selRP) selRP.disabled = readActive;
 
   // ── Canvas election button — contextual overlay near dead primary ──
   const canvasBtnEl = document.getElementById('btn-canvas-election');
@@ -176,17 +162,26 @@ const PANEL_EL_IDS = {
 function showStepPanel(i, eng, panelId) {
   const ids = PANEL_EL_IDS[panelId];
   if (!ids) return;
+  const isWritePanel = panelId === 'write-step-panel';
   if (i < 0 || eng.steps.length === 0) {
     document.getElementById(ids.badge).textContent = '';
     document.getElementById(ids.title).textContent = '';
     document.getElementById(ids.explain).innerHTML =
       `<span class="step-panel-idle">${IDLE_HINT[panelId] || ''}</span>`;
     document.getElementById(ids.dots).innerHTML = '';
+    if (isWritePanel) renderPhaseTrail(eng);
     return;
   }
   const s = eng.steps[i];
-  const totalLabel = (eng._machine && !eng._machine.isDone && !eng.done) ? `${eng.steps.length}+` : `${eng.steps.length}`;
-  document.getElementById(ids.badge).textContent  = `Step ${i+1} of ${totalLabel}`;
+  const hasPhaseTrail = isWritePanel && eng._machine && typeof eng._machine.getProgress === 'function';
+  if (hasPhaseTrail) {
+    document.getElementById(ids.badge).textContent = '';
+    renderPhaseTrail(eng);
+  } else {
+    const totalLabel = `${eng.steps.length}`;
+    document.getElementById(ids.badge).textContent = `Step ${i+1} of ${totalLabel}`;
+    if (isWritePanel) renderPhaseTrail(eng);
+  }
   document.getElementById(ids.title).textContent  = s.title;
   const explainEl = document.getElementById(ids.explain);
   const prevDetails = explainEl.querySelector('.step-details');
@@ -197,12 +192,126 @@ function showStepPanel(i, eng, panelId) {
     `<div class="step-explain-body">${s.explain}</div>` +
     `</details>`;
   const dotsEl = document.getElementById(ids.dots);
-  dotsEl.innerHTML = '';
-  eng.steps.forEach((_, j) => {
-    const d = document.createElement('div');
-    d.className = 'step-dot' + (j < i ? ' done' : j === i ? ' current' : '');
-    dotsEl.appendChild(d);
+  if (hasPhaseTrail) {
+    dotsEl.innerHTML = '';
+  } else {
+    dotsEl.innerHTML = '';
+    eng.steps.forEach((_, j) => {
+      const d = document.createElement('div');
+      d.className = 'step-dot' + (j < i ? ' done' : j === i ? ' current' : '');
+      dotsEl.appendChild(d);
+    });
+  }
+}
+
+// ── Phase trail rendering (write panel only) ──
+// Phases: { label, state: 'done'|'active'|'pending'|'error' }
+const PHASE_ICONS = { done: '✓', active: '●', pending: '○', error: '✗' };
+
+function renderPhaseTrail(eng) {
+  const el = document.getElementById('write-phase-trail');
+  if (!el) return;
+
+  const phases = buildPhases(eng);
+  if (!phases) { el.innerHTML = ''; return; }
+
+  el.innerHTML = '';
+  phases.forEach((p, i) => {
+    if (i > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'phase-sep';
+      sep.textContent = '·';
+      el.appendChild(sep);
+    }
+    const pill = document.createElement('span');
+    pill.className = `phase-pill ${p.state}`;
+    pill.innerHTML = `<span class="phase-icon">${PHASE_ICONS[p.state]}</span> ${p.label}`;
+    el.appendChild(pill);
   });
+}
+
+function buildPhases(eng) {
+  if (eng.idx < 0 || eng.steps.length === 0) return null;
+
+  const m = eng._machine;
+  if (!m || typeof m.getProgress !== 'function') return null;
+
+  const p = m.getProgress();
+  const done = eng.done;
+  const errored = p.errored;
+
+  // w:0 fire-and-forget: Send → Primary → Fire & forget
+  if (p.w === 0) {
+    const fireForgetDone = p.phase === 'done';
+    return [
+      { label: 'Send',    state: sendState(p, done) },
+      { label: 'Primary', state: primaryState(p, done, errored) },
+      { label: 'Fire & forget', state: fireForgetDone ? (errored ? 'error' : 'done') : (p.phase === 'fireForget' ? 'active' : 'pending') },
+    ];
+  }
+
+  // w:1 (no required secondaries): Send → Primary → ACK → Repl X/Y
+  // w:2/3/majority (required secondaries): Send → Primary → Repl X/Y → ACK
+  const hasRequiredRepl = p.secsNeeded > 0;
+  const replDone = p.replicated;
+  const replTotal = p.totalSecs;
+  const replLabel = `Repl ${replDone}/${replTotal}`;
+  const replInProgress = p.phase === 'repl' && (p.replicated > 0 || p.memApplied > 0);
+
+  function replState() {
+    if (errored && !p.acked) return 'error';
+    if (done) return 'done';
+    if (p.phase === 'repl') return replDone >= replTotal ? 'done' : 'active';
+    return 'pending';
+  }
+
+  function ackState() {
+    if (errored) return 'error';
+    if (p.acked || done) return 'done';
+    if (p.phase === 'repl' && hasRequiredRepl) {
+      // ACK is pending until repl satisfies write concern
+      return 'pending';
+    }
+    if (p.phase === 'repl' && !hasRequiredRepl) {
+      // w:1: primary done → ACK fires before repl
+      return 'pending';
+    }
+    return 'pending';
+  }
+
+  if (!hasRequiredRepl) {
+    // w:1: Send → Primary → ACK → Repl X/Y
+    return [
+      { label: 'Send',    state: sendState(p, done) },
+      { label: 'Primary', state: primaryState(p, done, errored) },
+      { label: 'ACK',     state: p.acked ? 'done' : (errored ? 'error' : (p.phase === 'repl' ? 'active' : 'pending')) },
+      { label: replLabel, state: replState() },
+    ];
+  }
+
+  // w:2/3/majority: Send → Primary → Repl X/Y → ACK
+  return [
+    { label: 'Send',    state: sendState(p, done) },
+    { label: 'Primary', state: primaryState(p, done, errored) },
+    { label: replLabel, state: replState() },
+    { label: 'ACK',     state: ackState() },
+  ];
+}
+
+function sendState(p, done) {
+  if (done || p.phase !== 'send') return 'done';
+  return 'active';
+}
+
+function primaryState(p, done, errored) {
+  if (errored && (p.phase === 'done') && !(['repl', 'fireForget'].includes(p.phase))) {
+    // Error during primary phase
+    if (p.phase === 'done' && p.replicated === 0 && !p.acked) return 'error';
+  }
+  if (done || ['repl', 'fireForget'].includes(p.phase) || (p.phase === 'done' && (p.acked || p.replicated > 0))) return 'done';
+  if (p.phase === 'primaryMem' || p.phase === 'primaryJournal') return 'active';
+  if (p.phase === 'done' && errored) return 'error';
+  return 'pending';
 }
 
 // Wraps a pre-built step array as a machine (lazy generator interface).

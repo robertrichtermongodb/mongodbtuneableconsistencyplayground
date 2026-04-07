@@ -14,15 +14,24 @@ const s = () => ctx.state;
 // ─── w:1 happy path ─────────────────────────────────────────────────────────
 
 describe('w:1 j:false — primary-only ACK', () => {
-  it('produces: send, primaryMem, primaryJournal, ACK, then async repl', async () => {
+  it('ACKs after primary memory + journal (same as j:true for w:1)', async () => {
     const m = machine(1, false);
     const titles = await runMachineToEnd(m);
 
     assert.ok(titles[0].includes('sends'));
     assert.ok(titles[1].includes('memory'));
-    assert.ok(titles[2].includes('journal'));
-    assert.ok(titles[3].includes('ACK'));
-    assert.ok(titles.length >= 4, `expected >=4 steps, got ${titles.length}`);
+    assert.ok(titles[2].includes('journal'), `step 3 should be journal, got: ${titles[2]}`);
+    assert.ok(titles[3].includes('ACK'), `step 4 should be ACK, got: ${titles[3]}`);
+  });
+
+  it('primary journal comes before ACK', async () => {
+    const m = machine(1, false);
+    const titles = await runMachineToEnd(m);
+
+    const journalIdx = titles.findIndex(t => t.includes('journal'));
+    const ackIdx = titles.findIndex(t => t.includes('ACK'));
+    assert.ok(journalIdx < ackIdx,
+      `journal (idx ${journalIdx}) must come before ACK (idx ${ackIdx})`);
   });
 
   it('ACKs after primary only — no secondary needed', async () => {
@@ -59,6 +68,32 @@ describe('w:1 j:false — primary-only ACK', () => {
     await runMachineSteps(m, 1); // ACK
     assert.equal(s().nodes.primary.phase, 'acked');
     assert.equal(s().writeClient.phase, 'received');
+  });
+});
+
+// ─── w:1 j:true — journal-gated ─────────────────────────────────────────────
+
+describe('w:1 j:true — journal flush required before ACK', () => {
+  it('journal flush comes before ACK', async () => {
+    const m = machine(1, true);
+    const titles = await runMachineToEnd(m);
+
+    const journalIdx = titles.findIndex(t => t.includes('journal'));
+    const ackIdx = titles.findIndex(t => t.includes('ACK'));
+    assert.ok(journalIdx >= 0, 'should have journal step');
+    assert.ok(ackIdx >= 0, 'should have ACK step');
+    assert.ok(journalIdx < ackIdx,
+      `journal (idx ${journalIdx}) must come before ACK (idx ${ackIdx})`);
+  });
+
+  it('step sequence is: send, primaryMem, primaryJournal, ACK', async () => {
+    const m = machine(1, true);
+    const titles = await runMachineToEnd(m);
+
+    assert.ok(titles[0].includes('sends'));
+    assert.ok(titles[1].includes('memory'));
+    assert.ok(titles[2].includes('journal'));
+    assert.ok(titles[3].includes('ACK'), `step 4 should be ACK, got: ${titles[3]}`);
   });
 });
 
@@ -123,13 +158,17 @@ describe('w:majority — phase transitions', () => {
 
 // ─── w:majority j:true ──────────────────────────────────────────────────────
 
-describe('w:majority j:true', () => {
-  it('gates ack on journal (same structure as j:false for majority)', async () => {
-    const m = machine('majority', true);
-    const titles = await runMachineToEnd(m);
+describe('w:majority j:true — identical to j:false for majority', () => {
+  it('produces same step count and final state as j:false', async () => {
+    const mTrue  = machine('majority', true);
+    const mFalse = machine('majority', false);
 
-    const ackIdx = titles.findIndex(t => t.includes('ACK'));
-    assert.ok(ackIdx >= 5);
+    const titlesTrue  = await runMachineToEnd(mTrue);
+    resetState(ctx);
+    const titlesFalse = await runMachineToEnd(mFalse);
+
+    assert.equal(titlesTrue.length, titlesFalse.length,
+      'j:true and j:false should produce same number of steps for w:majority');
     assert.equal(s().doc.majorityCommitId, 1);
   });
 });
@@ -186,17 +225,27 @@ describe('writer disconnected', () => {
 describe('primary down after send', () => {
   it('fails when primary is dead at memory-apply phase', async () => {
     const m = machine(1, false);
-    // Run only the send step
     await runMachineSteps(m, 1);
     assert.equal(s().doc.latestId, 1);
 
-    // Kill primary
     s().nodes.primary.alive = false;
 
-    // Next step should detect dead primary
     const titles = await runMachineToEnd(m);
     assert.ok(titles.some(t => t.includes('No primary')));
     assert.equal(s().writeClient.phase, 'error');
+  });
+
+  it('rolls back latestId and versions on failure', async () => {
+    const m = machine(1, false);
+    await runMachineSteps(m, 1);
+    assert.equal(s().doc.latestId, 1);
+    assert.equal(s().doc.versions.length, 1);
+
+    s().nodes.primary.alive = false;
+    await runMachineToEnd(m);
+
+    assert.equal(s().doc.latestId, 0, 'failed write should roll back latestId');
+    assert.equal(s().doc.versions.length, 0, 'failed write should remove version entry');
   });
 });
 
@@ -258,28 +307,55 @@ describe('w:majority — both secondaries down', () => {
 // ─── w:2 — needs exactly 1 secondary ───────────────────────────────────────
 
 describe('w:2 j:false', () => {
-  it('ACKs after primary + 1 secondary', async () => {
+  it('ACKs after primary journal + 1 secondary journal', async () => {
     const m = machine(2, false);
     const titles = await runMachineToEnd(m);
 
     const ackIdx = titles.findIndex(t => t.includes('ACK'));
-    assert.ok(ackIdx >= 0);
+    assert.ok(ackIdx >= 0, 'should contain ACK step');
+    // w:2 j:false: send(0) + primaryMem(1) + primaryJournal(2) + s1Mem(3) + s1Journal(4) → ACK(5)
+    assert.equal(ackIdx, 5, `ACK should be at index 5, was ${ackIdx}`);
     assert.equal(s().writeClient.phase, 'received');
+
+    const entry = s().doc.versions[0];
+    assert.ok(entry.ackedBy.size >= 2, `w:2 needs >=2 acks, got ${entry.ackedBy.size}`);
+    assert.ok(entry.ackedBy.has('primary'), 'primary must be among acked nodes');
+  });
+
+  it('primary journal comes before secondary replication', async () => {
+    const m = machine(2, false);
+    const titles = await runMachineToEnd(m);
+
+    const priJournalIdx = titles.findIndex(t => t.includes('journal') && t.includes('Primary'));
+    const secMemIdx = titles.findIndex(t => t.includes('receives') || (t.includes('memory') && !t.includes('Primary')));
+    assert.ok(priJournalIdx < secMemIdx,
+      `primary journal (idx ${priJournalIdx}) should come before secondary mem (idx ${secMemIdx})`);
   });
 });
 
 // ─── w:3 — needs all nodes ──────────────────────────────────────────────────
 
 describe('w:3 j:false', () => {
-  it('ACKs after all 3 nodes ack', async () => {
+  it('ACKs after all 3 nodes memory + journal', async () => {
     const m = machine(3, false);
     const titles = await runMachineToEnd(m);
 
     const ackIdx = titles.findIndex(t => t.includes('ACK'));
     assert.ok(ackIdx >= 0);
-    // All 3 nodes should have acked
+    // w:3 j:false: send(0) + primaryMem(1) + primaryJournal(2) + s1Mem(3) + s1Journal(4) + s2Mem(5) + s2Journal(6) → ACK(7)
+    assert.equal(ackIdx, 7, `ACK should be at index 7, was ${ackIdx}`);
     const entry = s().doc.versions[0];
     assert.equal(entry.ackedBy.size, 3);
+  });
+
+  it('primary journal comes before all secondary replication', async () => {
+    const m = machine(3, false);
+    const titles = await runMachineToEnd(m);
+
+    const priJournalIdx = titles.findIndex(t => t.includes('journal') && t.includes('Primary'));
+    const secMemIdxs = titles.map((t, i) => (t.includes('memory') && !t.includes('Primary')) ? i : -1).filter(i => i >= 0);
+    assert.ok(secMemIdxs.every(i => i > priJournalIdx),
+      `all secondary mem applies should come after primary journal`);
   });
 });
 
@@ -335,5 +411,121 @@ describe('w:majority — partition link to S1 mid-replication', () => {
     const hasS2 = rest.some(t => t.includes('Secondary 2'));
     assert.ok(hasS2, 'should route to S2');
     assert.ok(rest.some(t => t.includes('ACK')), 'should still ACK');
+  });
+});
+
+// ─── primary crash at various stages ────────────────────────────────────────
+
+describe('primary crash after memory apply (before journal)', () => {
+  it('errors with "unjournaled write lost"', async () => {
+    const m = machine(1, false);
+    await runMachineSteps(m, 2); // send + primaryMem
+    assert.equal(s().nodes.primary.memoryVersion, 1);
+
+    // Kill primary (crashNode wipes memory)
+    ctx.crashNode('primary');
+    s().nodes.primary.alive = false;
+
+    const rest = await runMachineToEnd(m);
+    assert.ok(rest.some(t => t.includes('crashed')), `should report crash: ${rest.join(' | ')}`);
+    assert.equal(s().writeClient.phase, 'error');
+  });
+});
+
+describe('primary crash after journal flush (during replication)', () => {
+  it('errors with "replication halted"', async () => {
+    const m = machine('majority', false);
+    await runMachineSteps(m, 3); // send + primaryMem + primaryJournal
+    assert.equal(s().nodes.primary.journalVersion, 1);
+
+    // Kill primary (journal survives)
+    ctx.crashNode('primary');
+    s().nodes.primary.alive = false;
+
+    const rest = await runMachineToEnd(m);
+    assert.ok(rest.some(t => t.includes('crashed')), `should report crash: ${rest.join(' | ')}`);
+    assert.equal(s().writeClient.phase, 'error');
+    assert.equal(s().nodes.primary.journalVersion, 1, 'journal should survive crash');
+  });
+});
+
+describe('primary crash after secondary mem apply (mid-replication)', () => {
+  it('errors instead of continuing to ACK', async () => {
+    const m = machine('majority', false);
+    await runMachineSteps(m, 4); // send + primaryMem + primaryJournal + s1Mem
+    assert.equal(s().nodes.s1.memoryVersion, 1);
+
+    // Kill primary
+    ctx.crashNode('primary');
+    s().nodes.primary.alive = false;
+
+    const rest = await runMachineToEnd(m);
+    assert.ok(rest.some(t => t.includes('crashed')), `should report crash: ${rest.join(' | ')}`);
+    assert.ok(!rest.some(t => t.includes('ACK returned')), 'must NOT ack the client');
+    assert.equal(s().writeClient.phase, 'error');
+  });
+});
+
+// ─── primary bounce (kill + revive) ─────────────────────────────────────────
+
+describe('primary bounce after ACK (w:1 j:false) — data survives', () => {
+  it('data survives bounce because primary journaled before ACK', async () => {
+    const m = machine(1, false);
+    await runMachineSteps(m, 4); // send + primaryMem + primaryJournal + ACK
+    assert.equal(s().writeClient.phase, 'received');
+    assert.equal(s().nodes.primary.journalVersion, 1);
+
+    // Bounce primary: crash wipes memory, recover restores from journal (=1)
+    ctx.crashNode('primary');
+    s().nodes.primary.alive = false;
+    s().nodes.primary.alive = true;
+    ctx.recoverNode('primary');
+    assert.equal(s().nodes.primary.memoryVersion, 1, 'restored from journal');
+
+    const rest = await runMachineToEnd(m);
+    assert.ok(!rest.some(t => t.includes('lost')),
+      'data should NOT be lost — journal survived');
+  });
+});
+
+describe('primary bounce before ACK (w:majority j:false) — write lost', () => {
+  it('fails the write with error', async () => {
+    const m = machine('majority', false);
+    await runMachineSteps(m, 3); // send + primaryMem + primaryJournal
+    assert.equal(s().nodes.primary.journalVersion, 1);
+    assert.equal(s().nodes.primary.memoryVersion, 1);
+
+    // Bounce: crash preserves journal, recover restores from it
+    ctx.crashNode('primary');
+    s().nodes.primary.alive = false;
+    s().nodes.primary.alive = true;
+    ctx.recoverNode('primary');
+    assert.equal(s().nodes.primary.memoryVersion, 1, 'journal survived, data restored');
+
+    // Machine should continue normally since data is intact
+    const rest = await runMachineToEnd(m);
+    assert.ok(rest.some(t => t.includes('ACK')), 'should still ACK — data survived');
+    assert.equal(s().writeClient.phase, 'received');
+  });
+});
+
+describe('primary bounce before ACK (w:1 j:false, unjournaled) — write lost', () => {
+  it('fails the write since data was only in memory', async () => {
+    const m = machine(1, false);
+    await runMachineSteps(m, 2); // send + primaryMem (no journal yet)
+    assert.equal(s().nodes.primary.memoryVersion, 1);
+    assert.equal(s().nodes.primary.journalVersion, 0);
+
+    // Bounce: crash wipes memory (no journal to recover from)
+    ctx.crashNode('primary');
+    s().nodes.primary.alive = false;
+    s().nodes.primary.alive = true;
+    ctx.recoverNode('primary');
+    assert.equal(s().nodes.primary.memoryVersion, 0, 'data lost — no journal backup');
+
+    const rest = await runMachineToEnd(m);
+    assert.ok(rest.some(t => t.includes('restarted') || t.includes('lost')),
+      `should report data loss: ${rest.join(' | ')}`);
+    assert.equal(s().writeClient.phase, 'error');
   });
 });

@@ -40,9 +40,10 @@ describe('rc:local — reads memoryVersion', () => {
   });
 
   it('flags dirty read when memoryVersion > majorityCommitId', async () => {
-    // Write w:1 — stop at ACK before async replication advances majorityCommitId
+    // Write w:1 j:false — stop at ACK before async replication advances majorityCommitId
+    // send + primaryMem + primaryJournal + ACK = 4 steps
     const m = machine(1, false);
-    await runMachineSteps(m, 4); // send + primaryMem + primaryJournal + ACK
+    await runMachineSteps(m, 4);
     s().writeClient.phase = 'idle';
     s().readClient.phase = 'idle';
     Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
@@ -57,13 +58,19 @@ describe('rc:local — reads memoryVersion', () => {
     assert.equal(s().readClient.lastReceivedVersion.dirty, true);
   });
 
-  it('reads from secondary with secondaryPreferred', async () => {
+  it('reads from secondary (not primary) with secondaryPreferred', async () => {
     await writeV1();
+    // Give primary a higher memoryVersion so we can tell if it was read from
+    s().nodes.primary.memoryVersion = 99;
+    s().readClient.phase = 'idle';
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+
     const steps = readSteps('local', 'secondaryPreferred');
     const titles = await runSteps(steps);
 
     assert.equal(s().readClient.phase, 'received');
-    assert.ok(s().readClient.lastReceivedVersion.id >= 0);
+    assert.notEqual(s().readClient.lastReceivedVersion.id, 99,
+      'should read from secondary, not primary (v99)');
   });
 });
 
@@ -82,6 +89,7 @@ describe('rc:majority — reads majorityCommitId', () => {
 
   it('returns none when only w:1 write done (not majority-committed)', async () => {
     // Stop at ACK — before async replication would advance majorityCommitId
+    // send + primaryMem + primaryJournal + ACK = 4 steps
     const m = machine(1, false);
     await runMachineSteps(m, 4);
     s().readClient.phase = 'idle';
@@ -127,11 +135,58 @@ describe('rc:linearizable', () => {
     Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
 
     const steps = readSteps('linearizable', 'primary');
-    const titles = await runSteps(steps);
+    await runSteps(steps);
 
-    assert.ok(titles.some(t => t.includes('blocks') || t.includes('Cannot confirm')),
-      `should block: ${titles.join(' | ')}`);
     assert.equal(s().readClient.phase, 'error');
+  });
+
+  it('blocks when secondaries die AFTER steps are built (runtime check)', async () => {
+    await writeV1();
+    s().readClient.phase = 'idle';
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+
+    // Build steps while all nodes are alive
+    const steps = readSteps('linearizable', 'primary');
+
+    // Run the first step (read request sent to primary)
+    await steps[0].run();
+
+    // Kill both secondaries AFTER step-build, before leadership check runs
+    s().nodes.s1.alive = false;
+    s().nodes.s2.alive = false;
+
+    // Run remaining steps — leadership check should fail at runtime
+    for (let i = 1; i < steps.length; i++) await steps[i].run();
+
+    assert.equal(s().readClient.phase, 'error',
+      'should detect dead secondaries at runtime, not just build time');
+  });
+
+  it('returns fresh majorityCommitId at data-return time (not build time)', async () => {
+    await writeV1();
+    assert.equal(s().doc.majorityCommitId, 1);
+    s().readClient.phase = 'idle';
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+
+    // Build steps while majorityCommitId=1
+    const steps = readSteps('linearizable', 'primary');
+
+    // Run steps 0 + 1 (read request + leadership ping)
+    await steps[0].run();
+    await steps[1].run();
+
+    // Advance majorityCommitId to 2 BETWEEN leadership confirmation and data return
+    s().doc.versions.push({ id: 2, op: 'update', ackedBy: new Set(['primary', 's1']) });
+    s().doc.latestId = 2;
+    s().doc.majorityCommitId = 2;
+    s().nodes.primary.memoryVersion = 2;
+
+    // Run leadership evaluation + data return
+    await steps[2].run();
+    await steps[3].run();
+
+    assert.equal(s().readClient.lastReceivedVersion.id, 2,
+      'linearizable should return the CURRENT majorityCommitId (2), not the build-time value (1)');
   });
 });
 
@@ -198,14 +253,17 @@ describe('primary dead — read preference fallback', () => {
     assert.ok(titles.some(t => t.includes('fails') || t.includes('No eligible')));
   });
 
-  it('primaryPreferred falls back to secondary', async () => {
+  it('primaryPreferred falls back to secondary and returns data', async () => {
     await writeV1();
     s().nodes.primary.alive = false;
     s().readClient.phase = 'idle';
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
 
     const steps = readSteps('local', 'primaryPreferred');
     const titles = await runSteps(steps);
 
     assert.equal(s().readClient.phase, 'received');
+    assert.ok(s().readClient.lastReceivedVersion.id >= 1,
+      'secondary should serve replicated data');
   });
 });

@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-04-07 from a complete review of the live codebase.*
+*Last updated 2026-03-15 from a complete review of the live codebase (Iteration 14).*
 
 ---
 
@@ -16,19 +16,20 @@ An interactive single-page simulator for exploring how MongoDB **write concerns*
 
 ```
 index.html              — layout, popups, script tags, footer (no inline CSS or JS)
-css/style.css           — all CSS (extracted from old inline <style>)
+css/style.css           — all CSS (variables driven by theme.js)
 js/
+  theme.js              — design tokens (dark/light), CSS variable injection, toggle logic
   state.js              — shared state, doc helpers, resolveReadTarget, getLinkBetween
   logger.js             — log() function (separated to break circular dep)
   icons.js              — SVG Path2D constants (ICON_LEAF, ICON_RS)
   draw.js               — canvas rendering, hit testing, consistency overlays, layout
   engine.js             — step engines, runMachine, arrayMachine, syncButtons, showStepPanel, auto-finish
   simulation.js         — createWriteMachine(), buildReadSteps(), buildElectionSteps()
-  app.js                — event handlers, popup logic, init
+  app.js                — custom tooltips, non-default badge, event handlers, popup logic, init
 test/
   helpers.js            — VM-based test harness loading source files with browser stubs
   state.test.js         — unit tests for state.js pure functions
-  machine.test.js       — write machine scenario tests (w:1, w:majority, crash-retarget, etc.)
+  machine.test.js       — write machine scenario tests (w:1, w:majority, crash-retarget, bounce, etc.)
   reads.test.js         — read concern + preference scenario tests
   election.test.js      — election scenario tests (quorum, rollback, winner selection)
 package.json            — npm test script (node --test, zero dependencies)
@@ -39,10 +40,15 @@ docs/
   mongodb-read-write-concerns.md — structured rc/wc reference (still valid)
   ha-scenarios.md       — HA scenarios extracted from PPTX (still valid)
   DEPRECATED_*.md       — superseded docs kept for history
+prompts/
+  quality-standards.md  — AI coding quality standards for this project
+  iteration-log-prompt.md — prompt template for creating iteration logs
+  quality-check-prompt.md — post-change verification checklist
+logs/iterations/        — iteration logs (01–14) + TEMPLATE.md
 index.v1–v6.html        — legacy HTML snapshots (not used)
 ```
 
-Script load order: `state.js → logger.js → icons.js → draw.js → engine.js → simulation.js → app.js`. No build step; deployable to GitHub Pages as static files.
+Script load order: `theme.js` (in `<head>`) → `state.js → logger.js → icons.js → draw.js → engine.js → simulation.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
 
 Test runner: Node.js built-in `node --test` (Node 18+). Run with `npm test`. Tests use `node:vm` to load source files in an isolated context with browser globals stubbed.
 
@@ -173,29 +179,50 @@ Uses `PANEL_EL_IDS` lookup map (not string manipulation). Step explain text rend
 
 Returns a machine `{ history, isDone, nextStep() }` that dynamically evaluates the live topology to decide the next step. When a node crashes or a link partitions mid-replication, the machine re-targets remaining alive secondaries automatically.
 
-**Internal phase progression:** `send` → `primaryMem` → `primaryJournal` → `repl` → `done` (with `fireForget` branch for w:0)
+**Internal phase progression:** All paths follow the same structure:
+- `send` → `primaryMem` → `primaryJournal` → `repl` → `done`
+- `w:0` branches: `send` → `primaryMem` → `primaryJournal` → `fireForget` → `done`
+
+The primary always flushes to journal before any replication begins, regardless of `j:true/false`. The `j` flag only affects *when the ack counts* (memory apply for j:false, journal flush for j:true).
 
 **Internal state tracked across steps:**
 - `replicated: Set` — secondaries with both memory + journal done
 - `memApplied: Set` — secondaries with memory done, awaiting journal
-- `pendingJournal: nodeKey|null` — secondary whose journal step is next
+- `pendingJournal: nodeKey|null` — secondary whose journal step is next (j:true/w:majority path)
 - `acked: bool` — whether the ACK has been sent to the client
 
 **Step generation logic:**
 0. Guard: `w:0 + j:true` → demote to `w:1` (per MongoDB docs, server requires primary ACK after journal flush)
 1. Guard: writer disconnected → error step → done
-2. Guard: primary dead → error step → done
+2. Guard: primary dead or bounced (data lost) → error/abort step → done
 3. Client sends particle → primary
-4. **Primary memory apply** — `memoryVersion = nextId`. If `j:false` and not `w:majority`: ack counted here.
-5. **Primary journal flush** — `journalVersion = nextId`. If `j:true` or `w:majority`: ack counted here.
+4. **Primary memory apply** — `memoryVersion = nextId`. If `j:false` and not `w:majority`: ack counted here (fast path).
+5. **Primary journal flush** — `journalVersion = nextId`. If `j:true` or `w:majority`: ack counted here. Always runs before replication.
 6. `w:0` → fire-and-forget step with parallel async replication → done
 7. **Replication loop** (the dynamic heart, evaluated on each `nextStep()` call):
-   - If `pendingJournal` exists and node is reachable → journal flush step
-   - If `pendingJournal` exists but node crashed/partitioned → skip, retarget
+   - **j:false interleave:** if a secondary just finished memory apply (`memApplied` non-empty), flush its journal immediately (one at a time, before picking the next secondary)
+   - **j:true / w:majority:** if `pendingJournal` exists and node is reachable → journal flush step; if crashed → skip, retarget
    - If write concern satisfied and not yet acked → ACK step
-   - If eligible secondary available → memory apply step (sets `pendingJournal`)
+   - If eligible secondary available → memory apply step (sets `pendingJournal` for j:true, or `memApplied` for j:false)
    - If write concern NOT satisfied and no more secondaries → error step
    - If all replication done → cleanup step (reset nodes to idle)
+
+**Example step sequences:**
+- `w:1 j:false`: send → primaryMem → primaryJournal → ACK → S1Mem → S1Journal → S2Mem → S2Journal → done
+- `w:1 j:true`: send → primaryMem → primaryJournal → ACK → S1Mem → S1Journal → S2Mem → S2Journal → done
+- `w:majority j:false`: send → primaryMem → primaryJournal → S1Mem → S1Journal → ACK → S2Mem → S2Journal → done
+- `w:2 j:false`: send → primaryMem → primaryJournal → S1Mem → S1Journal → ACK → S2Mem → S2Journal → done
+- `w:3 j:false`: send → primaryMem → primaryJournal → S1Mem → S1Journal → S2Mem → S2Journal → ACK → done
+
+**Primary data integrity invariant:**
+- `primaryAlive()` — checks `state.nodes[primaryKey].alive`
+- `primaryHasData()` — checks `memoryVersion >= nextId` (data still in memory after a bounce)
+- `primaryCanServe()` — both alive AND has data; used by all steps after `primaryMem`
+- `primaryUnavailableStep()` — handles dead primary (error) and bounced-but-lost-data primary (abort if acked, error if not)
+- `guardRun(fn)` / `guardRunAlive(fn)` — wrappers for step `run()` functions that check invariants before executing
+
+**Pedagogical safety notes:**
+- `isDefault` and `defaultNote` — when `w !== 'majority'`, error/ACK explain texts append a blue info note explaining that the MongoDB default (`w:majority` since v5.0) prevents the demonstrated issue.
 
 Run-time liveness guards in step `run()` functions ensure that if a node dies between `nextStep()` (step generation) and `step.run()` (step execution), the step skips gracefully and the machine retargets on the next iteration.
 
@@ -232,7 +259,7 @@ Draw cycle order:
 6. `drawWriteClient()` / `drawReadClient()` — session ring + "Session @ vX" label when active
 7. `drawDocLedger()` — floating box between clients showing doc #1 state (in-flight vs committed vs durable)
 8. `drawParticles()` — eased animation at `PARTICLE_MS=1400ms`
-9. `updateConsistencyViews()` — writer/reader HTML overlays
+9. `updateConsistencyViews()` — writer/reader HTML overlays (includes "Acknowledged but LOST" state detection and default-safety callout notes)
 10. `updateReadActionControls()` — snapshot button visibility
 
 ### Node doc badge (two-row storage layers)
@@ -267,11 +294,37 @@ A `<button>` absolutely positioned inside `.stage`, shown/hidden by `syncButtons
 
 ---
 
-## 7. App Logic (`js/app.js`)
+## 7. Theming (`js/theme.js`)
+
+Two complete themes (dark/light) defined as flat token objects in `THEMES`. On load and toggle:
+1. All tokens written to `document.documentElement.style` as CSS custom properties (`--pageBg`, `--green`, etc.)
+2. Canvas-specific tokens exposed on global `T` object for `draw.js` (which can't use CSS variables in `CanvasRenderingContext2D`)
+3. Theme preference persisted to `localStorage` key `tcp-theme`
+
+Toggle button: `btn-theme-toggle` in the topo bar.
+
+---
+
+## 8. App Logic (`js/app.js`)
+
+### Custom tooltip system
+
+A delegated tooltip component using `mouseenter`/`mouseleave` on `document` (capturing phase). Any element with `data-tip` gets a styled tooltip after a 420ms hover delay. Tooltip supports title + body (split on `\n\n`). Positioned above the target with an arrow, auto-repositioned to stay within viewport.
+
+### Tooltip definitions
+
+- `DROPDOWN_TIPS` — per-value tooltip maps for `sel-w`, `sel-j`, `sel-rc`, `sel-readpref` dropdowns; updated via `syncTooltips()` on change
+- `BUTTON_TIPS` — static tooltips for all action buttons
+
+### Non-default config badge
+
+`syncWBadge()` updates the `#w-default-badge` element next to the `w` dropdown:
+- `w:majority` → green "✓ DEFAULT" with tooltip explaining safety
+- Any other value → amber "⚠ NON-DEFAULT" with tooltip explaining rollback risk
 
 ### Event binding
 
-All via `addEventListener` (no inline `onclick`). Button IDs: `btn-reset`, `btn-write-start`, `btn-write-next`, `btn-write-finish`, `btn-read-start`, `btn-read-session-start`, `btn-read-session-again`, `btn-read-session-end`, `btn-read-next`, `btn-read-finish`, `btn-canvas-election`, `btn-dismiss-welcome`, `btn-dismiss-wip`.
+All via `addEventListener` (no inline `onclick`). Button IDs: `btn-reset`, `btn-write-start`, `btn-write-next`, `btn-write-finish`, `btn-read-start`, `btn-read-session-start`, `btn-read-session-again`, `btn-read-session-end`, `btn-read-next`, `btn-read-finish`, `btn-canvas-election`, `btn-dismiss-welcome`, `btn-dismiss-wip`, `btn-theme-toggle`.
 
 ### Write/Read/Election handlers
 
@@ -329,9 +382,9 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 
 ---
 
-## 9. Testing (`test/`)
+## 10. Testing (`test/`)
 
-74 tests across 4 files, zero external dependencies. Uses Node's built-in `node:test` runner.
+85 tests across 4 files, zero external dependencies. Uses Node's built-in `node:test` runner.
 
 ### Test harness (`test/helpers.js`)
 
@@ -345,14 +398,14 @@ Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isol
 
 | File | Tests | Covers |
 |---|---|---|
-| `state.test.js` | 27 | `journalFlush`, `crashNode` (ack retraction, majority recompute), `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget`, `getServedVersion`, `isReachableForWrite` |
-| `machine.test.js` | 23 | Write machine: w:1/2/3/majority/0, j:true/false, w:0+j:true demotion, writer disconnect, primary down, **crash-retarget** (the original bug), unsatisfiable wc, link partition, sequential writes, node phase transitions |
-| `reads.test.js` | 13 | Read steps: rc:local (dirty flag), rc:majority (frozen), rc:linearizable (blocks), rc:snapshot (session lock), reader disconnect, primary dead fallback |
-| `election.test.js` | 11 | Election: winner selection (highest oplog), quorum failure, rollback of uncommitted writes, majority-committed preserved, version capping, snapshot session invalidation |
+| `state.test.js` | 24 | `journalFlush`, `crashNode` (ack retraction, majority recompute), `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget`, `getServedVersion`, `isReachableForWrite` |
+| `machine.test.js` | 35 | Write machine: w:1/2/3/majority/0, j:true/false, w:0+j:true demotion, writer disconnect, primary down, crash-retarget, unsatisfiable wc, link partition, sequential writes, node phase transitions, **interleaved journal ordering** (j:false), **primary bounce scenarios** (data lost pre/post-ACK) |
+| `reads.test.js` | 16 | Read steps: rc:local (dirty flag), rc:majority (frozen), rc:linearizable (blocks, runtime topology, fresh served value), rc:snapshot (session lock), reader disconnect, primary dead fallback |
+| `election.test.js` | 10 | Election: winner selection (highest oplog), quorum failure, rollback of uncommitted writes, majority-committed preserved, version capping, snapshot session invalidation |
 
 ---
 
-## 10. Known Bugs & Limitations
+## 11. Known Bugs & Limitations
 
 > For a full correctness audit (correct / incorrect / imprecise / missing), see `docs/correctness.md`.
 
@@ -381,7 +434,7 @@ Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isol
 
 ---
 
-## 11. Codebase Health
+## 12. Codebase Health
 
 ### Resolved (from prior reviews)
 
@@ -399,7 +452,13 @@ Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isol
 - `rp`/`wp` link reset on concern/preference change
 - `w:0 + j:true` demoted to `w:1` — guard at top of `createWriteMachine`
 - Write flow refactored from static step array to **lazy state machine** with dynamic topology adaptation
-- Test suite (74 tests) covering state helpers, write machine, read steps, and elections
+- **Primary data integrity invariant** centralised in `primaryCanServe()` / `primaryHasData()` — covers crash, bounce, and data-loss scenarios
+- **Interleaved journal ordering** for j:false — each secondary flushes journal before next secondary starts replication
+- **Pedagogical safety notes** — non-default write concern states show info notes explaining MongoDB's safe default
+- **Dark/light theming** via CSS custom properties driven by `js/theme.js`
+- **Custom tooltip system** with delegated event handling and per-dropdown/per-button definitions
+- **Non-default config badge** on `w` dropdown
+- Test suite (85 tests) covering state helpers, write machine (including bounce/journal ordering), read steps, and elections
 
 ### Open
 

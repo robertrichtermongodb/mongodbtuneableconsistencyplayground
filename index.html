@@ -5,8 +5,18 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MongoDB Read &amp; Write Concerns Playground</title>
   <link rel="stylesheet" href="css/style.css" />
+  <script src="js/theme.js"></script>
 </head>
 <body>
+
+<!-- Mobile hint popup -->
+<div class="mobile-overlay" id="mobile-overlay">
+  <div class="mobile-popup">
+    <h2>Heads up</h2>
+    <p>This tool is designed for tablets and desktops. On mobile devices, please use landscape mode for the best experience.</p>
+    <button id="btn-dismiss-mobile">Got it</button>
+  </div>
+</div>
 
 <!-- Welcome popup -->
 <div class="welcome-overlay" id="welcome-overlay">
@@ -19,24 +29,18 @@
   </div>
 </div>
 
-<!-- WIP first-view popup -->
-<div class="wip-overlay" id="wip-overlay">
-  <div class="wip-popup">
-    <h2>ATTENTION!</h2>
-    <p>WIP VERSION! NOT FULLY TESTED AND CHECKED FOR CORRECTNESS!</p>
-    <button id="btn-dismiss-wip">Got it</button>
-  </div>
-</div>
-
 <header>
-  <h1>MongoDB Read &amp; Write Concerns Playground</h1>
+  <h1>MongoDB Read &amp; Write Concerns Playground <span class="wip-badge">W.I.P.</span></h1>
   <p class="subtitle">Visualise how read &amp; write concerns shape data flow in a 3-node replica set</p>
 </header>
 
 <!-- Topology hint + Reset -->
 <div class="topo-bar">
   <span class="topo-hint">Click nodes to toggle health · Click links to partition · Click client connection lines to interrupt</span>
-  <button class="sec" id="btn-reset">Reset ↺</button>
+  <div style="display:flex;gap:5px">
+    <button class="sec" id="btn-reset">Reset ↺</button>
+    <button class="sec theme-toggle" id="btn-theme-toggle">☀</button>
+  </div>
 </div>
 
 <!-- ═══ Top row: write config | step panels | read config ═══ -->
@@ -54,6 +58,7 @@
         <option value="3">3 — all nodes</option>
         <option value="majority" selected>majority</option>
       </select>
+      <span id="w-default-badge" class="config-badge config-badge-hidden"></span>
     </div>
     <div class="cg">
       <label for="sel-j">Journal (j)</label>
@@ -77,6 +82,7 @@
           <span class="step-badge" id="write-step-badge"></span>
           <div class="step-dots" id="write-step-dots"></div>
         </div>
+        <div class="phase-trail" id="write-phase-trail"></div>
         <div class="step-title" id="write-step-title"></div>
         <div class="step-explain" id="write-step-explain"><span class="step-panel-idle">Start a write to step through the replication flow.</span></div>
         <div class="step-actions">
@@ -145,8 +151,7 @@
     <div class="cb-dim">No reads completed</div>
   </div>
   <!-- Canvas-contextual election trigger — positioned via JS below the dead primary -->
-  <button id="btn-canvas-election" class="canvas-election-btn"
-    title="Uses RAFT consensus: secondaries vote for the candidate with the most up-to-date oplog. A majority wins and becomes the new primary. Uncommitted writes on the old primary are rolled back.">
+  <button id="btn-canvas-election" class="canvas-election-btn">
     ⚡ Trigger Election
     <span class="raft-hint">ⓘ RAFT consensus — hover for details</span>
   </button>
@@ -157,32 +162,37 @@
 </div>
 
 <div class="card log-card log-panel">
-  <h2>Event log</h2>
+  <div class="log-header">
+    <h2>Event log</h2>
+    <button class="sec log-clear-btn" id="btn-clear-log">Clear</button>
+  </div>
   <div id="log"></div>
 </div>
 
 <footer>
-  <div style="margin-bottom:6px">
-    MongoDB Read/Write Concerns Playground &nbsp;·&nbsp;
+  <div style="margin-bottom:6px;font-style:italic">
+    This tool is NOT part of the official MongoDB documentation and not maintained by MongoDB.
+    It is an educational tool that simplifies workflows and omits details for clarity. Always consult the
+    <a href="https://www.mongodb.com/docs/manual/" target="_blank" rel="noopener">official MongoDB documentation</a>
+    before deploying anything to production.
+  </div>
+  <div>
+    Designed &amp; iterated by human, implemented by AI &nbsp;·&nbsp;
+    Author: <a href="https://www.linkedin.com/in/robert-richter-27b46812b/" target="_blank" rel="noopener">Robert Richter</a>
+    &nbsp;·&nbsp; <a href="https://github.com/robertrichtermongodb/mongodb-read-write-concerns-playground" target="_blank" rel="noopener">View on GitHub</a>
+  </div>
+  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--footerBorder)">
     <a href="https://www.mongodb.com/docs/manual/reference/read-concern/" target="_blank" rel="noopener">MongoDB Docs: Read Concern</a>
     &nbsp;·&nbsp;
     <a href="https://www.mongodb.com/docs/manual/reference/write-concern/" target="_blank" rel="noopener">MongoDB Docs: Write Concern</a>
     &nbsp;·&nbsp; Last updated: April 7, 2026
-  </div>
-  <div>
-    Author: <a href="https://www.linkedin.com/in/robert-richter-27b46812b/" target="_blank" rel="noopener">Robert Richter</a>
-    &nbsp;·&nbsp; <a href="https://github.com/robertrichtermongodb/mongodb-read-write-concerns-playground" target="_blank" rel="noopener">View on GitHub</a>
-  </div>
-  <div style="margin-top:8px;padding-top:8px;border-top:1px solid #1E2D3A;color:#3A5060;font-style:italic">
-    This is an educational tool that simplifies workflows and omits details for clarity. Always consult the
-    <a href="https://www.mongodb.com/docs/manual/" target="_blank" rel="noopener">official MongoDB documentation</a>
-    before deploying anything to production.
   </div>
 </footer>
 
 <script src="js/state.js"></script>
 <script src="js/logger.js"></script>
 <script src="js/icons.js"></script>
+<script src="js/texts.js"></script>
 <script src="js/draw.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/simulation.js"></script>

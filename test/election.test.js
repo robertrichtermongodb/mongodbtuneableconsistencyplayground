@@ -76,9 +76,10 @@ describe('election — quorum failure', () => {
 
 describe('election — rollback of uncommitted writes', () => {
   it('rolls back versions above majorityCommitId', async () => {
-    // Write w:1 — stop at ACK before async repl advances majority
+    // Write w:1 j:false — stop at ACK before async repl advances majority
+    // send + primaryMem + primaryJournal + ACK = 4 steps
     const m = machine(1, false);
-    await runMachineSteps(m, 4); // send + primaryMem + primaryJournal + ACK
+    await runMachineSteps(m, 4);
     assert.equal(s().doc.latestId, 1);
     assert.equal(s().doc.majorityCommitId, 0);
 
@@ -98,7 +99,8 @@ describe('election — rollback of uncommitted writes', () => {
     await runMachineToEnd(machine('majority', false));
     assert.equal(s().doc.majorityCommitId, 1);
 
-    // Write w:1 — stop at ACK before async repl advances majority
+    // Write w:1 j:false — stop at ACK before async repl advances majority
+    // send + primaryMem + primaryJournal + ACK = 4 steps
     Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
     const m2 = machine(1, false);
     await runMachineSteps(m2, 4);
@@ -135,7 +137,8 @@ describe('election — rollback of uncommitted writes', () => {
 
 describe('election — snapshot session invalidation', () => {
   it('invalidates session when locked version is rolled back', async () => {
-    // Write w:1 — stop at ACK to keep it uncommitted
+    // Write w:1 j:false — stop at ACK to keep it uncommitted
+    // send + primaryMem + primaryJournal + ACK = 4 steps
     const m = machine(1, false);
     await runMachineSteps(m, 4);
 

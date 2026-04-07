@@ -10,7 +10,7 @@ const JS_DIR = path.join(__dirname, '..', 'js');
 
 // Source files in load order (matches index.html <script> tags).
 // We skip icons.js (pure SVG paths) and logger.js / draw.js (replaced by stubs).
-const SOURCE_FILES = ['state.js', 'simulation.js', 'engine.js'];
+const SOURCE_FILES = ['theme.js', 'state.js', 'texts.js', 'simulation.js', 'engine.js'];
 
 function createContext() {
   const ctx = vm.createContext({
@@ -46,6 +46,10 @@ function createContext() {
         innerHTML: '',
         addEventListener: () => {},
       }),
+      documentElement: {
+        setAttribute() {},
+        style: { setProperty() {} },
+      },
     },
     localStorage: { getItem: () => null, setItem: () => {} },
   });
