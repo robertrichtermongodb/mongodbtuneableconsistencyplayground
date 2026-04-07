@@ -14,6 +14,7 @@ After completing a major change:
    c. Create `logs/iterations/NN-short-kebab-name.md`.
    d. Fill every section with specifics: actual file paths, function names, test counts, design decisions.
    e. Describe what IS implemented, not what could be. Set Status to "Complete" or "In Progress".
+   f. Update the "Last updated" line in the `index.html` footer to today's date AND time (e.g. "April 7, 2026 22:00 CEST"). Always include both date and time — never drop the time component.
 ```
 
 **Log-worthy:** New user-facing capability, architectural refactor, correctness fix, new test coverage area.
