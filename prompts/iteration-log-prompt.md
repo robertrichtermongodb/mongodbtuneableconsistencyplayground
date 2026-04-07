@@ -8,6 +8,7 @@ After completing a major change, create an iteration log:
 3. Create `logs/iterations/NN-short-kebab-name.md`.
 4. Fill every section with specifics: actual file paths, function names, test counts, design decisions.
 5. Describe what IS implemented, not what could be. Set Status to "Complete" or "In Progress".
+6. Update the "Last updated" timestamp in the `index.html` footer to the current date and time.
 ```
 
 **Log-worthy:** New user-facing capability, architectural refactor, correctness fix, new test coverage area.
