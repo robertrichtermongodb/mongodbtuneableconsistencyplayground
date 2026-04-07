@@ -364,6 +364,7 @@ function initPopups() {
 // INIT
 // ═══════════════════════════════════════
 resizeCanvas();
+window.addEventListener('load', resizeCanvas);
 updateReadActionControls();
 syncButtons();
 syncWBadge();
