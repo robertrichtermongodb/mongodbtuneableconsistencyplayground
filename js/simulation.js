@@ -13,6 +13,12 @@ function canAchieve(w) {
 // BUILD WRITE STEPS
 // ═══════════════════════════════════════
 function buildWriteSteps(w, j) {
+  // MongoDB: w:0 + j:true demotes to w:1 (primary acks after journal flush)
+  if (w === 0 && j) {
+    log('w:0 + j:true → MongoDB demotes to w:1 (primary must ack after journal flush).', 'warn');
+    w = 1;
+  }
+
   const steps = [];
 
   if (!state.links.wp) {
@@ -67,20 +73,48 @@ function buildWriteSteps(w, j) {
     return steps;
   }
 
-  // 2. Primary applies
+  // Whether ack requires journal: j:true always, or w:majority on default config (writeConcernMajorityJournalDefault:true)
+  const ackNeedsJournal = j || w === 'majority';
+
+  // 2a. Primary applies in memory
   steps.push({
-    title: `Primary applies ${opLabel}${j ? ' + journal flush' : ' in-memory'}`,
+    title: `Primary applies ${opLabel} in memory`,
     serverSide: true,
-    explain: j
-      ? `Primary appends to its oplog and <strong>flushes the on-disk journal</strong>. The write (<strong>${opLabel}</strong>) survives a crash of this node even before replication.`
-      : `Primary applies <strong>${opLabel}</strong> to its <strong>WiredTiger in-memory cache</strong> and appends to the oplog. Not crash-safe until journaled.`,
+    explain: `Primary applies <strong>${opLabel}</strong> to its <strong>WiredTiger in-memory cache</strong> and appends to the oplog. ` +
+      (ackNeedsJournal
+        ? `With <strong>${j ? 'j:true' : 'w:majority (writeConcernMajorityJournalDefault:true)'}</strong>, the primary will not count this as acknowledged until the journal is flushed.`
+        : `Data is now queryable via <strong>rc:local</strong> but <strong>not crash-safe</strong> until the journal flushes asynchronously.`),
     run: async () => {
-      const entry = state.doc.versions.find(v => v.id === nextId);
-      if (entry) { entry.ackedBy.add(state.primaryKey); }
-      state.nodes[state.primaryKey].docVersionId = nextId;
-      advanceMajorityCommit();
-      if (j) { await delay(500); log('Primary: journal flushed.', 'info'); }
+      state.nodes[state.primaryKey].memoryVersion = nextId;
+      if (!ackNeedsJournal) {
+        const entry = state.doc.versions.find(v => v.id === nextId);
+        if (entry) { entry.ackedBy.add(state.primaryKey); }
+        advanceMajorityCommit();
+      }
+      state.nodes[state.primaryKey].phase = 'active';
+      log(`Primary: v${nextId} applied in memory.`, 'info');
+      draw();
+    },
+  });
+
+  // 2b. Primary journal flush
+  steps.push({
+    title: `Primary journal flush${ackNeedsJournal ? ' (ack gate)' : ' (async)'}`,
+    serverSide: true,
+    explain: ackNeedsJournal
+      ? `Primary flushes <strong>${opLabel}</strong> to the <strong>on-disk journal (WAL)</strong>. This write is now <strong>crash-safe</strong> on this node. ` +
+        (j ? `<strong>j:true</strong> requires this flush before counting the primary's acknowledgment.`
+           : `<strong>w:majority</strong> on the default config (<strong>writeConcernMajorityJournalDefault:true</strong>) gates the ack on journal, overriding the client's j:false.`)
+      : `WiredTiger asynchronously flushes <strong>${opLabel}</strong> to the <strong>on-disk journal</strong> (~50ms in production). The primary already counted its ack from the memory apply. After this flush, the write <strong>survives a crash</strong> of this node.`,
+    run: async () => {
+      journalFlush(state.primaryKey);
+      if (ackNeedsJournal) {
+        const entry = state.doc.versions.find(v => v.id === nextId);
+        if (entry) { entry.ackedBy.add(state.primaryKey); }
+        advanceMajorityCommit();
+      }
       state.nodes[state.primaryKey].phase = w === 0 ? 'acked' : 'active';
+      log(`Primary: journal flushed — v${nextId} crash-safe.`, 'ok');
       draw();
     },
   });
@@ -93,10 +127,11 @@ function buildWriteSteps(w, j) {
       run: async () => {
         reachableSecs.forEach((k, i) => setTimeout(() =>
           awaitParticle(state.nodes[state.primaryKey], state.nodes[k], '#4A90D9', 'v' + nextId, () => {
-            state.nodes[k].docVersionId = nextId;
+            state.nodes[k].memoryVersion = nextId;
             const entry = state.doc.versions.find(v => v.id === nextId);
             if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
             state.nodes[k].phase = 'acked';
+            setTimeout(() => { journalFlush(k); draw(); }, 400);
           }),
         i * 100));
         startAnimLoop();
@@ -108,36 +143,54 @@ function buildWriteSteps(w, j) {
     return steps;
   }
 
-  // Per-secondary replication step (replicate = ack in one step)
-  function makeReplStep(k, isRequired) {
+  // Per-secondary replication steps (memory apply + journal flush)
+  function makeReplSteps(k, isRequired) {
     const label = state.nodes[k].label;
-    return {
-      title: `Replicate to ${label}`,
+    const memStep = {
+      title: `${label}: apply v${nextId} in memory`,
       serverSide: true,
       explain: isRequired
-        ? `Primary sends <strong>${opLabel}</strong> to <strong>${label}</strong> via oplog. ` +
-          `<strong>w:${w}</strong> requires this secondary to confirm before the ACK goes back to the client.` +
-          (j ? ` With <strong>j:true</strong>, the secondary flushes to journal.` : '')
-        : `Primary sends <strong>${opLabel}</strong> to <strong>${label}</strong> via oplog. ` +
-          `This happens <strong>after the client already received the ACK</strong> \u2014 a background cluster operation.` +
-          (j ? ` The secondary flushes to journal upon applying.` : ''),
+        ? `Primary sends <strong>${opLabel}</strong> to <strong>${label}</strong> via oplog. The secondary applies the write to its <strong>in-memory cache</strong>.` +
+          (ackNeedsJournal ? ` <strong>${j ? 'j:true' : 'w:majority'}</strong> requires a journal flush before this secondary's ack counts.` : ` Ack counted on memory apply.`)
+        : `Primary sends <strong>${opLabel}</strong> to <strong>${label}</strong> via oplog (background). ` +
+          `This happens <strong>after the client already received the ACK</strong>.`,
       run: async () => {
-        if (j) await delay(200);
         await awaitParticle(state.nodes[state.primaryKey], state.nodes[k], '#4A90D9', 'v' + nextId, () => {
-          state.nodes[k].docVersionId = nextId;
-          const entry = state.doc.versions.find(v => v.id === nextId);
-          if (entry) { entry.ackedBy.add(k); }
-          advanceMajorityCommit();
-          state.nodes[k].phase = 'acked';
-          log(`${label}: replicated v${nextId}.`, 'ok');
+          state.nodes[k].memoryVersion = nextId;
+          if (!ackNeedsJournal) {
+            const entry = state.doc.versions.find(v => v.id === nextId);
+            if (entry) { entry.ackedBy.add(k); }
+            advanceMajorityCommit();
+          }
+          state.nodes[k].phase = 'active';
+          log(`${label}: v${nextId} in memory.`, 'info');
         });
         draw();
       },
     };
+    const journalStep = {
+      title: `${label}: journal flush${ackNeedsJournal ? ' (ack gate)' : ''}`,
+      serverSide: true,
+      explain: ackNeedsJournal
+        ? `<strong>${label}</strong> flushes <strong>v${nextId}</strong> to journal. Ack now counts toward the write concern.`
+        : `<strong>${label}</strong> asynchronously flushes <strong>v${nextId}</strong> to journal. Write is now crash-safe on this secondary.`,
+      run: async () => {
+        journalFlush(k);
+        if (ackNeedsJournal) {
+          const entry = state.doc.versions.find(v => v.id === nextId);
+          if (entry) { entry.ackedBy.add(k); }
+          advanceMajorityCommit();
+        }
+        state.nodes[k].phase = 'acked';
+        log(`${label}: journal flushed — v${nextId} crash-safe.`, 'ok');
+        draw();
+      },
+    };
+    return [memStep, journalStep];
   }
 
   if (!achievable) {
-    reachableSecs.forEach(k => steps.push(makeReplStep(k, true)));
+    reachableSecs.forEach(k => makeReplSteps(k, true).forEach(s => steps.push(s)));
     steps.push({
       title: 'Write concern cannot be satisfied',
       explain: `<strong>w:${w}</strong> needs ${needCount} node(s), but only ${reachCount} reachable. ` +
@@ -156,15 +209,14 @@ function buildWriteSteps(w, j) {
   const required  = reachableSecs.slice(0, secsNeeded);
   const asyncSecs = reachableSecs.slice(secsNeeded);
 
-  required.forEach(k => steps.push(makeReplStep(k, true)));
+  required.forEach(k => makeReplSteps(k, true).forEach(s => steps.push(s)));
 
   steps.push({
     title: `ACK returned \u2014 ${opLabel} committed`,
     explain: `All required acknowledgments collected for <strong>w:${w}${j ? ', j:true' : ''}</strong>. ` +
-      (w === 'majority' && j
-        ? `<strong>Fully durable.</strong> v${nextId} is majority-committed. Survives crash of any minority of nodes.`
-        : w === 'majority'
-        ? `v${nextId} is majority-committed. Survives failover but <strong>j:false means a majority crash before journal flush could lose this write.</strong>`
+      (w === 'majority'
+        ? `<strong>Fully durable.</strong> v${nextId} is majority-committed. Survives crash of any minority of nodes.` +
+          (!j ? ` <em>(On the default config with <strong>writeConcernMajorityJournalDefault:true</strong>, w:majority implies journal flush regardless of the client-provided j value — the server overrides j:false.)</em>` : '')
         : w === 1
         ? `Primary-only acknowledgment. v${nextId} sits on primary \u2014 <strong>rollback risk</strong> if primary steps down before replication.`
         : `Acked by ${needCount} node(s).`),
@@ -177,7 +229,7 @@ function buildWriteSteps(w, j) {
     },
   });
 
-  asyncSecs.forEach(k => steps.push(makeReplStep(k, false)));
+  asyncSecs.forEach(k => makeReplSteps(k, false).forEach(s => steps.push(s)));
 
   // Wrap the last step to reset all nodes to idle
   const lastStep = steps[steps.length - 1];
@@ -243,7 +295,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       }
       await awaitParticle(state.readClient, target, '#7EC8E3', 'read?', () => {
         target.phase = 'reading';
-        log(`Read arrived at ${target.label} (rc:${rc}, node holds v${target.docVersionId || 'none'}).`, 'info');
+        log(`Read arrived at ${target.label} (rc:${rc}, node holds v${target.memoryVersion || 'none'}).`, 'info');
       });
     },
   });
@@ -260,7 +312,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
   }
 
   if (rc === 'local' || rc === 'available') {
-    const nodeVer = target.docVersionId;
+    const nodeVer = target.memoryVersion;
     const nodeLabel = nodeVer > 0 ? `v${nodeVer}` : 'none';
     const dirty = nodeVer > 0 && nodeVer > state.doc.majorityCommitId;
     steps.push({
@@ -412,13 +464,19 @@ function buildElectionSteps() {
   const pk = state.primaryKey;
   const candidates = Object.keys(state.nodes)
     .filter(k => k !== pk && state.nodes[k].alive)
-    .sort((a, b) => (state.nodes[b].docVersionId || 0) - (state.nodes[a].docVersionId || 0));
+    .sort((a, b) => (state.nodes[b].memoryVersion || 0) - (state.nodes[a].memoryVersion || 0));
 
-  if (candidates.length === 0) {
+  const totalAlive = Object.values(state.nodes).filter(n => n.alive).length;
+  const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1; // 2 for a 3-node set
+
+  if (candidates.length === 0 || totalAlive < majorityNeeded) {
+    const reason = candidates.length === 0
+      ? `No alive secondaries available.`
+      : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members alive — need ${majorityNeeded} (majority) to hold an election.`;
     return [{
-      title: 'No eligible candidates — election impossible',
-      explain: `No alive secondaries available. A majority (≥ 2 nodes) must be reachable for an election to succeed. Bring at least one secondary back online first.`,
-      run: async () => { log('Election aborted — no eligible candidates.', 'err'); draw(); },
+      title: 'Election impossible — no majority',
+      explain: `${reason} RAFT requires a <strong>majority of voting members</strong> to agree on a new primary. Bring more nodes online first.`,
+      run: async () => { log(`Election aborted — ${reason}`, 'err'); draw(); },
     }];
   }
 
@@ -430,11 +488,11 @@ function buildElectionSteps() {
     title: `Election triggered — ${winnerNode.label} campaigns`,
     explain: `Secondaries stop receiving heartbeats from the primary and start an election after <strong>electionTimeoutMillis</strong> (default 10 s). ` +
       `<em>Under the hood MongoDB uses <strong>RAFT consensus</strong>: each secondary sends a vote request containing its last oplog term and timestamp; peers only vote for a candidate whose oplog is at least as up-to-date as theirs, and each node votes at most once per term. The candidate that collects a majority of votes wins.</em> ` +
-      `<strong>${winnerNode.label}</strong> has the most recent oplog (v${winnerNode.docVersionId || 'none'}) and qualifies as primary.`,
+      `<strong>${winnerNode.label}</strong> has the most recent oplog (v${winnerNode.memoryVersion || 'none'}) and qualifies as primary.`,
     run: async () => {
       winnerNode.phase = 'candidate';
       draw();
-      log(`Election in progress — ${winnerNode.label} is campaigning (oplog v${winnerNode.docVersionId || 'none'}).`, 'warn');
+      log(`Election in progress — ${winnerNode.label} is campaigning (oplog v${winnerNode.memoryVersion || 'none'}).`, 'warn');
     },
   });
 
@@ -455,7 +513,8 @@ function buildElectionSteps() {
       state.doc.versions = state.doc.versions.filter(v => v.id <= state.doc.majorityCommitId);
       state.doc.latestId = state.doc.majorityCommitId;
       Object.values(state.nodes).forEach(n => {
-        n.docVersionId = Math.min(n.docVersionId || 0, state.doc.majorityCommitId);
+        n.memoryVersion  = Math.min(n.memoryVersion  || 0, state.doc.majorityCommitId);
+        n.journalVersion = Math.min(n.journalVersion || 0, state.doc.majorityCommitId);
       });
 
       if (state.readClient.sessionActive &&

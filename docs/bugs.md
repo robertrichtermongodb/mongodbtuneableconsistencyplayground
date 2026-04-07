@@ -1,1 +1,0 @@
-- Switching "Primary" back on, will undo the primary election. Hence, if i shut down the primary and then triggered an election, the primary will be switched back to the old primary. This should not happen. Until a full reset, the primary should stay the same.

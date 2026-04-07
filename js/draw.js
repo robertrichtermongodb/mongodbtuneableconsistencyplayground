@@ -1,7 +1,14 @@
 // ═══════════════════════════════════════
 // ANIMATION
 // ═══════════════════════════════════════
+let skipAnimations = false;
+function setSkipAnimations(v) { skipAnimations = v; }
+
 function awaitParticle(from, to, color, label, onArrive) {
+  if (skipAnimations) {
+    if (onArrive) onArrive();
+    return Promise.resolve();
+  }
   return new Promise(resolve => {
     state.particles.push({
       sx: from.x, sy: from.y, tx: to.x, ty: to.y,
@@ -39,8 +46,8 @@ function startAnimLoop() {
 // ═══════════════════════════════════════
 function computeLayout(W, H) {
   const cx = W / 2;
-  const topY  = 82;
-  const nodeY = H - 120;
+  const topY  = 40;
+  const nodeY = 245;
   const spread = Math.min(250, W * 0.28);
 
   state.writeClient.x = cx - spread; state.writeClient.y = topY;
@@ -74,8 +81,8 @@ function resizeCanvas() {
   draw();
 }
 
-const PHASE_FILL   = { idle:'#182535', active:'#0D2820', acked:'#0A2010', error:'#2A0E0E', reading:'#0A1E30', serving:'#0A2018', waiting:'#182535', received:'#0A2010', candidate:'#1A1030' };
-const PHASE_STROKE = { idle:null,      active:'#00ED64', acked:'#00ED64', error:'#FF6B6B', reading:'#7EC8E3', serving:'#00ED64', candidate:'#B07AFF' };
+const PHASE_FILL   = { idle:'#182535', active:'#0D2820', acked:'#0A2010', error:'#2A0E0E', reading:'#0A1E30', serving:'#0A2018', waiting:'#182535', received:'#0A2010', candidate:'#1A1030', recovering:'#0A1A30' };
+const PHASE_STROKE = { idle:null,      active:'#00ED64', acked:'#00ED64', error:'#FF6B6B', reading:'#7EC8E3', serving:'#00ED64', candidate:'#B07AFF', recovering:'#4A90D9' };
 
 // ═══════════════════════════════════════
 // CANVAS HIT TESTING
@@ -157,38 +164,38 @@ function draw() {
 
 function drawDocLedger() {
   const { latestId, majorityCommitId } = state.doc;
-  const cx   = state.nodes[state.primaryKey].x;
-  const midY = (state.writeClient.y + state.nodes[state.primaryKey].y) / 2;
+  const cx   = (state.writeClient.x + state.readClient.x) / 2;
+  const ledgerY = state.writeClient.y;
 
   ctx.save();
   ctx.textAlign = 'center';
 
   if (latestId === 0) {
-    drawIconText('Doc #1  ·  no writes yet', cx, midY + 5, '13px system-ui', '#4A6880', 13);
+    drawIconText('Doc #1  ·  no writes yet', cx, ledgerY + 4, '10px system-ui', '#4A6880', 10);
     ctx.restore(); return;
   }
 
   const hasCommitted = majorityCommitId > 0;
   const hasInFlight  = latestId > majorityCommitId;
   const twoRows = hasCommitted && hasInFlight;
-  const boxW = 300, boxH = twoRows ? 84 : 62;
-  const bx = cx - boxW / 2, by = midY - boxH / 2;
+  const boxW = 190, boxH = twoRows ? 58 : 42;
+  const bx = cx - boxW / 2, by = ledgerY - boxH / 2;
 
   ctx.fillStyle = '#0D1F30';
-  ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 6); ctx.fill();
   ctx.strokeStyle = hasInFlight ? '#F5A623' : '#00ED64';
-  ctx.lineWidth = 1.8;
-  ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 8); ctx.stroke();
+  ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 6); ctx.stroke();
 
-  drawIconText('Doc #1', cx, by + 18, 'bold 12px system-ui', '#7A9AB8', 12);
+  drawIconText('Doc #1', cx, by + 13, 'bold 9px system-ui', '#7A9AB8', 9);
 
   if (!hasInFlight) {
-    drawVersionRow(cx, by + 48, `v${latestId}`,         true,  'durable',   '#00ED64', 'bold 19px system-ui');
+    drawVersionRow(cx, by + 33, `v${latestId}`,         true,  'durable',   '#00ED64', 'bold 13px system-ui');
   } else if (!hasCommitted) {
-    drawVersionRow(cx, by + 48, `v${latestId}`,         false, 'in-flight', '#F5A623', 'bold 19px system-ui');
+    drawVersionRow(cx, by + 33, `v${latestId}`,         false, 'in-flight', '#F5A623', 'bold 13px system-ui');
   } else {
-    drawVersionRow(cx, by + 42, `v${majorityCommitId}`, true,  'committed', '#00ED64', 'bold 15px system-ui');
-    drawVersionRow(cx, by + 66, `v${latestId}`,         false, 'in-flight', '#F5A623', 'bold 15px system-ui');
+    drawVersionRow(cx, by + 30, `v${majorityCommitId}`, true,  'committed', '#00ED64', 'bold 11px system-ui');
+    drawVersionRow(cx, by + 47, `v${latestId}`,         false, 'in-flight', '#F5A623', 'bold 11px system-ui');
   }
 
   ctx.restore();
@@ -200,7 +207,7 @@ function drawRSBox() {
   const bx  = Math.min(...xs) - NR - pad;
   const bw  = Math.max(...xs) + NR + pad - bx;
   const by  = state.nodes.primary.y - NR - 24;
-  const bh  = NR * 2 + 78;
+  const bh  = NR * 2 + 80;
   ctx.save();
   ctx.strokeStyle = '#3A5878'; ctx.lineWidth = 1.8; ctx.setLineDash([6,4]);
   ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.stroke();
@@ -336,13 +343,19 @@ function drawNode(node, role) {
     node.phase === 'active'    ? '#4DCC90' :
     node.phase === 'reading'   ? '#7EC8E3' :
     node.phase === 'error'     ? '#FF6B6B' :
-    node.phase === 'candidate' ? '#B07AFF' :
-    role === 'primary'         ? '#E09A20' : '#5AAAE8';
+    node.phase === 'candidate'  ? '#B07AFF' :
+    node.phase === 'recovering' ? '#4A90D9' :
+    role === 'primary'          ? '#E09A20' : '#5AAAE8';
   drawIcon(ICON_LEAF, node.x, node.y - 10, 30, leafColor, 24);
 
   if (node.phase === 'candidate') {
     ctx.beginPath(); ctx.arc(node.x, node.y, NR + 7, 0, Math.PI * 2);
     ctx.strokeStyle = '#B07AFF'; ctx.lineWidth = 2; ctx.setLineDash([3, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (node.phase === 'recovering') {
+    ctx.beginPath(); ctx.arc(node.x, node.y, NR + 7, 0, Math.PI * 2);
+    ctx.strokeStyle = '#4A90D9'; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
     ctx.stroke(); ctx.setLineDash([]);
   }
 
@@ -362,35 +375,50 @@ function drawNode(node, role) {
 }
 
 function drawNodeDocBadge(node) {
-  if (state.doc.latestId === 0) return;
-  const vid = node.docVersionId;
-  let vText, borderColor, textColor, showIcon;
-  if (vid === 0) {
-    vText = '\u2014'; borderColor = '#2E4460'; textColor = '#4A6880'; showIcon = false;
-  } else if (vid <= state.doc.majorityCommitId) {
-    vText = `v${vid}`; borderColor = '#00ED64'; textColor = '#00ED64'; showIcon = true;
-  } else {
-    vText = `v${vid}`; borderColor = '#F5A623'; textColor = '#F5A623'; showIcon = true;
-  }
-  const iconSz = 11, gap = 4;
-  ctx.font = 'bold 12px system-ui';
-  const tw = ctx.measureText(vText).width;
-  const contentW = showIcon ? iconSz + gap + tw : tw;
-  const bw = Math.max(54, contentW + 20);
-  const bh = 22, br = 5;
-  const bx = node.x - bw / 2, by = node.y + NR + 12;
+  const mem  = node.memoryVersion;
+  const disk = node.journalVersion;
 
+  function vColor(v) {
+    if (v === 0) return '#4A6880';
+    return v <= state.doc.majorityCommitId ? '#00ED64' : '#F5A623';
+  }
+  function vText(v) { return v === 0 ? '\u2014' : `v${v}`; }
+
+  const bw = 80, rowH = 18, divider = 1, br = 5;
+  const bh = rowH * 2 + divider;
+  const bx = node.x - bw / 2, by = node.y + NR + 12;
+  const memColor  = vColor(mem);
+  const diskColor = vColor(disk);
+  const borderColor = mem > disk ? '#F5A623' : memColor;
+
+  // Background
   ctx.fillStyle = '#0D1F30';
   ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, br); ctx.fill();
   ctx.strokeStyle = borderColor; ctx.lineWidth = 1.4;
   ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, br); ctx.stroke();
 
-  const midX = node.x, midY = by + bh / 2 + 4;
-  if (showIcon) {
-    drawIconText(vText, midX, midY, 'bold 12px system-ui', textColor, iconSz);
-  } else {
-    ctx.fillStyle = textColor; ctx.textAlign = 'center';
-    ctx.fillText(vText, midX, midY);
+  // Divider line
+  ctx.strokeStyle = '#1A3048'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(bx + 4, by + rowH); ctx.lineTo(bx + bw - 4, by + rowH); ctx.stroke();
+
+  // Row labels
+  ctx.font = '7px system-ui'; ctx.textAlign = 'left';
+  ctx.fillStyle = '#5A7A98'; ctx.fillText('MEM', bx + 5, by + 11);
+  ctx.fillStyle = '#5A7A98'; ctx.fillText('DISK', bx + 5, by + rowH + 12);
+
+  // Memory version
+  ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'right';
+  ctx.fillStyle = memColor;
+  ctx.fillText(vText(mem), bx + bw - 6, by + 13);
+
+  // Disk version (with icon if flushed)
+  ctx.fillStyle = diskColor;
+  ctx.fillText(vText(disk), bx + bw - 6, by + rowH + 13);
+
+  // Flash cue: when memory is ahead of disk, show a small animated down-arrow
+  if (mem > 0 && mem > disk) {
+    ctx.fillStyle = '#F5A62388'; ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('\u25BC', bx + bw / 2, by + rowH + 1);
   }
 }
 

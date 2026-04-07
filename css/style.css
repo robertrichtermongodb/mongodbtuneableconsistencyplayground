@@ -39,11 +39,14 @@ button {
 }
 button:hover { background: #00c050; }
 button:disabled { background: #26384A; color: #5a7a8a; cursor: not-allowed; }
+button:disabled:hover { background: #26384A; color: #5a7a8a; }
 button.sec { background: #1A2E40; color: #D8E8F3; border: 1px solid #26384A; }
-button.sec:hover { background: #26384A; }
+button.sec:hover:not(:disabled) { background: #26384A; }
+button.sec:disabled { background: #1A2530; color: #3D5570; border-color: #1E2D3A; }
 button.sec.on { background: #0A2535; border-color: #00ED64; color: #00ED64; }
 button.read-btn { background: #7EC8E3; color: #0F1923; }
-button.read-btn:hover { background: #5ab8d8; }
+button.read-btn:hover:not(:disabled) { background: #5ab8d8; }
+button.read-btn:disabled { background: #26384A; color: #5a7a8a; }
 
 
 /* ── Config row: write config | step panels | read config ── */
@@ -68,7 +71,7 @@ button.read-btn:hover { background: #5ab8d8; }
 
 /* ── Stage (full-width canvas row) ── */
 .stage { padding: 14px; position: relative; width: 100%; max-width: 1200px; }
-#canvas { display: block; width: 100%; height: 560px; }
+#canvas { display: block; width: 100%; height: 365px; }
 
 /* ── Consistency overlays (float over canvas near client icons) ── */
 .consistency-overlay {
@@ -115,7 +118,7 @@ button.read-btn:hover { background: #5ab8d8; }
 .step-dot.done    { background: #00ED64; }
 .step-dot.current { background: #F5A623; }
 .step-title { font-size: 0.97rem; font-weight: 700; color: #fff; margin-bottom: 4px; min-height: 1.2em; }
-.step-explain { font-size: 0.83rem; color: #90AEBF; line-height: 1.6; min-height: 2em; }
+.step-explain { font-size: 0.83rem; color: #90AEBF; line-height: 1.6; }
 .step-explain strong { color: #D8E8F3; }
 .step-actions { display: flex; gap: 6px; margin-top: 10px; }
 
@@ -129,7 +132,7 @@ button.read-btn:hover { background: #5ab8d8; }
 .step-details-toggle::-webkit-details-marker { display: none; }
 .step-details-toggle::before { content: '▸ '; font-size: 0.65rem; }
 details[open] .step-details-toggle::before { content: '▾ '; }
-.step-explain-body { margin-top: 6px; padding-top: 6px; border-top: 1px solid #1E2D3A; }
+.step-explain-body { margin-top: 6px; padding-top: 6px; border-top: 1px solid #1E2D3A; min-height: 135px; }
 
 /* ── Canvas election button (absolute overlay on canvas stage) ── */
 .canvas-election-btn {

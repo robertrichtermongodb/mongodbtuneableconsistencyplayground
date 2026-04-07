@@ -11,9 +11,13 @@ function abortEngine(eng) {
 }
 
 // Centralised engine field reset — clears all engine state and cancels any auto-finish timer.
+// Resolves any pending waitForClick promise via the abort path before clearing state,
+// so runEngine's async loop terminates cleanly instead of hanging forever.
 function resetEngine(eng) {
+  eng.aborted = true;
+  if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
   eng.done = false; eng.idx = -1; eng.aborted = false;
-  eng._waitResolve = null; eng.busy = false; eng.steps = [];
+  eng.busy = false; eng.steps = [];
   if (eng._autoFinishId) { clearInterval(eng._autoFinishId); eng._autoFinishId = null; }
 }
 
@@ -48,7 +52,10 @@ function syncButtons() {
   const activeEng  = electionActive ? ee : we;
   const wnDis = activeEng.busy || activeEng._waitResolve === null;
   document.getElementById('btn-write-next').disabled   = wnDis;
-  document.getElementById('btn-write-finish').disabled = activeEng._waitResolve === null;
+  const wfDis = activeEng.idx === -1 || activeEng._waitResolve === null;
+  const btnWF = document.getElementById('btn-write-finish');
+  btnWF.disabled = wfDis;
+  btnWF.title = activeEng.idx === -1 ? 'Start a write first' : '';
 
   // ── Read panel ──
   const btnRS = document.getElementById('btn-read-start');
@@ -74,7 +81,10 @@ function syncButtons() {
 
   const rnDis = re.busy || re._waitResolve === null;
   document.getElementById('btn-read-next').disabled   = rnDis;
-  document.getElementById('btn-read-finish').disabled = re._waitResolve === null;
+  const rfDis = re.idx === -1 || re._waitResolve === null;
+  const btnRF = document.getElementById('btn-read-finish');
+  btnRF.disabled = rfDis;
+  btnRF.title = re.idx === -1 ? 'Start a read first' : '';
 
   // ── Lock dropdowns ──
   const selW = document.getElementById('sel-w');
@@ -93,8 +103,11 @@ function syncButtons() {
     const pk = state.primaryKey;
     const pNode = state.nodes[pk];
     const primaryDown   = !state.nodes[pk].alive;
+    const aliveCount    = Object.values(state.nodes).filter(n => n.alive).length;
+    const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
+    const canElect      = aliveCount >= majorityNeeded;
     const hasCandidates = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
-    const show = primaryDown && hasCandidates && !electionActive && !writeActive && !readActive;
+    const show = primaryDown && hasCandidates && canElect && !electionActive && !writeActive && !readActive;
     canvasBtnEl.style.display = show ? 'block' : 'none';
     if (show) {
       canvasBtnEl.style.left = (14 + pNode.x) + 'px';
@@ -125,15 +138,19 @@ function advanceElectionStep() {
   if (electionEngine._waitResolve) { const r = electionEngine._waitResolve; electionEngine._waitResolve = null; r(); }
 }
 
-// Shared auto-finish implementation — drives an engine to completion at 120ms intervals.
+// Shared auto-finish implementation — skips animations and drives engine to completion instantly.
 function _autoFinish(eng, advanceFn) {
   if (eng.done || eng.idx === -1 || eng._autoFinishId) return;
+  setSkipAnimations(true);
   eng._autoFinishId = setInterval(() => {
     if (eng.done || eng.idx === -1) {
-      clearInterval(eng._autoFinishId); eng._autoFinishId = null; return;
+      clearInterval(eng._autoFinishId); eng._autoFinishId = null;
+      setSkipAnimations(false);
+      draw();
+      return;
     }
     if (eng._waitResolve && !eng.busy) advanceFn();
-  }, 120);
+  }, 10);
 }
 
 function autoFinishWrite()    { _autoFinish(writeEngine,    advanceWriteStep); }
@@ -170,9 +187,11 @@ function showStepPanel(i, eng, panelId) {
   const s = eng.steps[i];
   document.getElementById(ids.badge).textContent  = `Step ${i+1} of ${eng.steps.length}`;
   document.getElementById(ids.title).textContent  = s.title;
-  // Explain text is expanded by default; user can collapse via the <details> toggle.
-  document.getElementById(ids.explain).innerHTML  =
-    `<details class="step-details" open>` +
+  const explainEl = document.getElementById(ids.explain);
+  const prevDetails = explainEl.querySelector('.step-details');
+  const wasOpen = prevDetails ? prevDetails.open : false;
+  explainEl.innerHTML =
+    `<details class="step-details"${wasOpen ? ' open' : ''}>` +
     `<summary class="step-details-toggle">Details</summary>` +
     `<div class="step-explain-body">${s.explain}</div>` +
     `</details>`;

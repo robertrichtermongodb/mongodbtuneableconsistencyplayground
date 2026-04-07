@@ -116,17 +116,35 @@ canvas.addEventListener('click', e => {
   if (!hit) return;
 
   if (hit.type === 'node') {
-    state.nodes[hit.key].alive = !state.nodes[hit.key].alive;
     const n = state.nodes[hit.key];
-    log(`${n.label} ${n.alive ? 'brought online' : 'taken down'} — document state preserved.`, n.alive ? 'ok' : 'warn');
-    resetWriteVisual(); resetReadVisual(); resetElectionVisual();
+    const wasAlive = n.alive;
+    n.alive = !n.alive;
+    if (!n.alive) {
+      // Crash: wipe volatile memory, preserve journal
+      const hadUnjournaledData = n.memoryVersion > n.journalVersion;
+      crashNode(hit.key);
+      log(`${n.label} taken down — memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${n.journalVersion || 'none'}).`, 'warn');
+    } else {
+      // Restart: recover from journal
+      const recoveredVersion = n.journalVersion;
+      recoverNode(hit.key);
+      n.phase = 'recovering';
+      draw();
+      if (recoveredVersion > 0) {
+        log(`${n.label} recovering from journal — restored to v${recoveredVersion}.`, 'ok');
+      } else {
+        log(`${n.label} restarted with empty state.`, 'info');
+      }
+      setTimeout(() => { if (n.alive) { n.phase = 'idle'; draw(); syncButtons(); } }, 600);
+    }
+    resetWriteVisual(); resetReadVisual(); if (!electionEngine.done) resetElectionVisual();
   } else if (hit.type === 'link') {
     const lk = getLinkBetween(state.primaryKey, hit.key);
     if (lk) {
       state.links[lk] = !state.links[lk];
       const label = `${state.nodes[state.primaryKey].label} \u2194 ${state.nodes[hit.key].label}`;
       log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} — document state preserved.`, state.links[lk] ? 'ok' : 'warn');
-      resetWriteVisual(); resetReadVisual(); resetElectionVisual();
+      resetWriteVisual(); resetReadVisual(); if (!electionEngine.done) resetElectionVisual();
     }
   } else if (hit.type === 'clientLink') {
     if (hit.key === 'wp') {

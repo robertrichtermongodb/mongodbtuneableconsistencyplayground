@@ -5,16 +5,19 @@ const PARTICLE_MS  = 1400;
 const AUTO_STEP_MS = 700;
 
 // Pure timing utility — no DOM deps, available to all subsequent files
-function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+function delay(ms) {
+  if (typeof skipAnimations !== 'undefined' && skipAnimations) return Promise.resolve();
+  return new Promise(r => setTimeout(r, ms));
+}
 
 // ═══════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════
 const state = {
   nodes: {
-    primary: { label: 'Primary',     x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
-    s1:      { label: 'Secondary 1', x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
-    s2:      { label: 'Secondary 2', x: 0, y: 0, alive: true, phase: 'idle', docVersionId: 0 },
+    primary: { label: 'Primary',     x: 0, y: 0, alive: true, phase: 'idle', memoryVersion: 0, journalVersion: 0 },
+    s1:      { label: 'Secondary 1', x: 0, y: 0, alive: true, phase: 'idle', memoryVersion: 0, journalVersion: 0 },
+    s2:      { label: 'Secondary 2', x: 0, y: 0, alive: true, phase: 'idle', memoryVersion: 0, journalVersion: 0 },
   },
   primaryKey: 'primary', // which node key is currently acting as primary
   writeClient: { x: 0, y: 0, phase: 'idle', lastWrittenVersion: 0 },
@@ -38,7 +41,7 @@ function resetDoc() {
   state.doc.versions = [];
   state.doc.latestId = 0;
   state.doc.majorityCommitId = 0;
-  Object.values(state.nodes).forEach(n => { n.docVersionId = 0; });
+  Object.values(state.nodes).forEach(n => { n.memoryVersion = 0; n.journalVersion = 0; });
   state.writeClient.lastWrittenVersion = 0;
   state.readClient.lastReceivedVersion = null;
   state.readClient.sessionActive = false;
@@ -71,12 +74,51 @@ function isReachableForWrite(key) {
 function getServedVersion(nodeKey, rc) {
   const node = state.nodes[nodeKey];
   if (rc === 'local' || rc === 'available') {
-    const id = node.docVersionId;
+    const id = node.memoryVersion;
     return { id, dirty: id > 0 && id > state.doc.majorityCommitId };
   }
   // majority, linearizable, snapshot → majority-commit point
   const id = state.doc.majorityCommitId;
   return { id, dirty: false };
+}
+
+// Flush a node's in-memory data to its on-disk journal (crash-safe).
+function journalFlush(nodeKey) {
+  const node = state.nodes[nodeKey];
+  node.journalVersion = node.memoryVersion;
+}
+
+// On crash: wipe volatile memory, preserve journal. Remove memory-only acks.
+function crashNode(nodeKey) {
+  const node = state.nodes[nodeKey];
+  const lostVersion = node.memoryVersion;
+  node.memoryVersion = 0;
+  // Retract acks for any version this node had only in memory (not journaled)
+  if (lostVersion > node.journalVersion) {
+    state.doc.versions.forEach(v => {
+      if (v.id > node.journalVersion && v.ackedBy.has(nodeKey)) {
+        v.ackedBy.delete(nodeKey);
+      }
+    });
+    recomputeMajorityCommit();
+  }
+}
+
+// On restart: recover from journal into memory.
+function recoverNode(nodeKey) {
+  const node = state.nodes[nodeKey];
+  node.memoryVersion = node.journalVersion;
+}
+
+// Full recomputation of majorityCommitId from scratch (needed after crash retracts acks).
+function recomputeMajorityCommit() {
+  state.doc.majorityCommitId = 0;
+  for (let i = state.doc.versions.length - 1; i >= 0; i--) {
+    if (state.doc.versions[i].ackedBy.size >= 2) {
+      state.doc.majorityCommitId = state.doc.versions[i].id;
+      break;
+    }
+  }
 }
 
 function advanceMajorityCommit() {
