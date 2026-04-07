@@ -77,8 +77,9 @@ function getServedVersion(nodeKey, rc) {
     const id = node.memoryVersion;
     return { id, dirty: id > 0 && id > state.doc.majorityCommitId };
   }
-  // majority, linearizable, snapshot → majority-commit point
-  const id = state.doc.majorityCommitId;
+  // majority, linearizable, snapshot → majority-commit point, capped by what
+  // this node actually has replicated (a node can't serve data it doesn't have)
+  const id = Math.min(state.doc.majorityCommitId, node.memoryVersion);
   return { id, dirty: false };
 }
 
