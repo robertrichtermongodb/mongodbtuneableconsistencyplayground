@@ -497,7 +497,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         draw(); return;
       }
       await awaitParticle(state.readClient, target, T.flowRead, 'read?', () => {
-        target.phase = 'reading';
         log(`Read arrived at ${target.label} (rc:${rc}, node holds v${target.memoryVersion || 'none'}).`, 'info');
       });
     },
@@ -523,7 +522,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       explain: tLocal.explain,
       run: async () => {
         await delay(250);
-        target.phase = 'serving';
         log(`${target.label}: serving rc:${rc} \u2192 ${nodeLabel}${dirty ? ' (dirty)' : ''}.`, dirty ? 'warn' : 'info');
         draw();
       },
@@ -535,7 +533,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       steps.push({
         title: tFroz.title,
         explain: tFroz.explain,
-        run: async () => { target.phase = 'error'; log(`rc:majority \u2014 majority-commit frozen at v${state.doc.majorityCommitId}.`, 'warn'); draw(); },
+        run: async () => { log(`rc:majority \u2014 majority-commit frozen at v${state.doc.majorityCommitId}.`, 'warn'); draw(); },
       });
       const frozenLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
       const tFrozRet = TEXTS.read.majorityFrozenReturn(frozenLabel);
@@ -543,7 +541,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         title: tFrozRet.title,
         explain: tFrozRet.explain,
         run: async () => {
-          target.phase = 'serving';
           await awaitParticle(target, state.readClient, T.flowWrite, frozenLabel, () => {
             state.readClient.phase = 'received';
             state.readClient.lastReceivedVersion = { id: state.doc.majorityCommitId, dirty: false };
@@ -560,7 +557,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       explain: tMaj.explain,
       run: async () => {
         await delay(350);
-        target.phase = 'serving';
         log(`${target.label}: reading majority-commit snapshot (${mcLabel}).`, 'info');
         draw();
       },
@@ -577,11 +573,11 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         if (liveSecs.length === 0) { await delay(300); return; }
         await Promise.all(liveSecs.map(k => {
           if (!state.nodes[k].alive) return Promise.resolve();
-          return awaitParticle(target, state.nodes[k], T.flowRead, 'ping', () => { state.nodes[k].phase = 'reading'; })
+          return awaitParticle(target, state.nodes[k], T.flowRead, 'ping', () => {})
             .then(() => delay(250))
             .then(() => {
               if (!state.nodes[k].alive) return;
-              return awaitParticle(state.nodes[k], target, T.flowAck, 'ack', () => { state.nodes[k].phase = 'serving'; });
+              return awaitParticle(state.nodes[k], target, T.flowAck, 'ack', () => {});
             });
         }));
       },
@@ -591,12 +587,11 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       run: async () => {
         const runtimeReachable = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
         if (runtimeReachable < 2) {
-          target.phase = 'error'; state.readClient.phase = 'error';
+          state.readClient.phase = 'error';
           log('rc:linearizable blocked \u2014 primary cannot confirm leadership.', 'err'); draw();
           return;
         }
         await delay(300);
-        target.phase = 'serving';
         const linLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
         log(`Primary confirmed. rc:linearizable serving ${linLabel}.`, 'info'); draw();
       },
@@ -611,7 +606,6 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       explain: tSnap.explain,
       run: async () => {
         await delay(400);
-        target.phase = 'serving';
         log(`${target.label}: point-in-time snapshot ready \u2192 ${snapLabel}.`, 'info'); draw();
       },
     });

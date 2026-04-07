@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Last updated 2026-03-15 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 14.*
+*Last updated 2026-03-15 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 17.*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -27,7 +27,7 @@ This document separates simulation behaviors into four categories:
 | w:majority + j:false — fully durable on default config | `createWriteMachine` | Explain text notes `writeConcernMajorityJournalDefault:true` overrides client j. |
 | Unachievable write concern blocks; write NOT rolled back | `createWriteMachine` | Explain text correctly describes wtimeout behavior. |
 | Dynamic topology adaptation during write | `createWriteMachine` | Machine re-evaluates live node liveness and link state on each `nextStep()` call, retargeting surviving secondaries when a node crashes or partitions mid-replication. |
-| j:false defers primary journal after ACK | `createWriteMachine` | Primary's journal flush happens after ACK for j:false (w≠majority), matching MongoDB's async journal behavior. |
+| Primary always journals before replication | `createWriteMachine` | Primary memory → journal → replication, regardless of j setting. For j:false, the ack counts on memory apply but the journal still happens before any secondary receives data. |
 | j:false interleaves secondary journal per node | `createWriteMachine` | Each secondary completes memory apply + journal flush before the next secondary starts, avoiding misleading batch visualization. |
 | Primary bounce detection (data loss) | `createWriteMachine` | `primaryHasData()` detects when a restarted primary lost unjournaled data. Handles both pre-ACK (write fails) and post-ACK (async work aborted, "Acknowledged but LOST" state). |
 | "Acknowledged but LOST" UI state | `draw.js` | Detects `writeClient.phase === 'received' && ackCount === 0 && !committed` and displays explicit data-loss warning. |
@@ -38,7 +38,7 @@ This document separates simulation behaviors into four categories:
 |---|---|---|
 | rc:local returns node's current in-memory state | state.js `getServedVersion` | Returns `node.memoryVersion`, flags dirty if above `majorityCommitId`. |
 | rc:available = rc:local on replica sets | state.js | Same code path. Correct per docs. |
-| rc:majority returns majority-commit point | state.js | Returns `state.doc.majorityCommitId`. |
+| rc:majority returns majority-commit point (capped by node) | state.js | Returns `min(majorityCommitId, node.memoryVersion)` — a node can only serve data it has replicated. |
 | rc:majority frozen when commit point can't advance | simulation.js | Detects `<2 reachable nodes`, returns frozen value. |
 | rc:majority frozen reads are stale but rollback-safe | simulation.js | Explain text distinguishes causal vs non-causal. |
 | rc:linearizable forces primary regardless of readPreference | state.js `resolveReadTarget` | Hardcoded `return pk`. |
@@ -88,6 +88,8 @@ This document separates simulation behaviors into four categories:
 | Majority-commit is cumulative (vN committed implies all prior) | state.js `advanceMajorityCommit` | Scans backward, stops at first qualifying. |
 | Client disconnect aborts write engine cleanly | app.js canvas click handler | Engine aborted; no remaining steps execute. Server-side replication that was *already applied* to node state persists. |
 | Failed write rolls back `latestId` and version entry | simulation.js `failWrite` | Prevents stale UI state (e.g., "Update" button when no doc exists). |
+| Reads don't change node write-state colors | simulation.js `buildReadSteps` | Read operations don't mutate node phases — node colors reflect write concern state only. |
+| All user-facing texts centralized | texts.js | Single source of truth for all step titles, explains, tooltips, and consistency views. |
 
 ---
 

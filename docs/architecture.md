@@ -86,7 +86,10 @@ state = {
 }
 ```
 
-**Node phases:** `idle | active | acked | error | reading | serving | waiting | received | candidate | recovering`
+**Node phases:** `idle | active | acked | error | candidate | recovering`
+**Client phases:** `idle | waiting | received | error`
+
+*Note:* `reading` and `serving` phase colors still exist in `draw.js` for legacy compatibility but are no longer assigned to server nodes — reads don't mutate node phase. Node colors exclusively reflect write-concern state.
 
 ### Storage layer model
 
