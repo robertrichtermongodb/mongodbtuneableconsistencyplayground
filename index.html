@@ -18,17 +18,6 @@
   </div>
 </div>
 
-<!-- Welcome popup -->
-<div class="welcome-overlay" id="welcome-overlay">
-  <div class="welcome-popup">
-    <h2>Welcome</h2>
-    <p>This simulator helps you understand how MongoDB read and write concerns shape data flow in a replica set. The goal is to make these guarantees tangible.</p>
-    <p>Note: MongoDB is fully consistent by default, despite the common misconception that it is eventually consistent only. It also offers powerful ways to tune consistency properties to your application's needs.</p>
-    <p><strong>How to use:</strong> Fire a write (e.g. "New doc with ID 1"), then experiment with different read concerns and read preferences to see what each brings back. You can also inject faults — click nodes to toggle health, links to partition — and observe how consistency changes.</p>
-    <button id="btn-dismiss-welcome">Got it</button>
-  </div>
-</div>
-
 <header>
   <h1>MongoDB Read &amp; Write Concerns Playground <span class="wip-badge">W.I.P.</span></h1>
   <p class="subtitle">Visualise how read &amp; write concerns shape data flow in a 3-node replica set</p>

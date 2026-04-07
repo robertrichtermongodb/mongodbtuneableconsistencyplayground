@@ -344,7 +344,6 @@ document.getElementById('btn-read-finish').addEventListener('click', autoFinishR
 document.getElementById('btn-canvas-election').addEventListener('click', handleElection);
 document.getElementById('btn-clear-log').addEventListener('click', () => { document.getElementById('log').innerHTML = ''; });
 document.getElementById('btn-dismiss-mobile').addEventListener('click', dismissMobilePopup);
-document.getElementById('btn-dismiss-welcome').addEventListener('click', dismissWelcomePopup);
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleTheme);
 
 // ═══════════════════════════════════════
@@ -352,22 +351,12 @@ document.getElementById('btn-theme-toggle').addEventListener('click', toggleThem
 // ═══════════════════════════════════════
 function dismissMobilePopup() {
   document.getElementById('mobile-overlay').classList.remove('visible');
-  if (!localStorage.getItem('tcp-welcome-seen')) {
-    document.getElementById('welcome-overlay').classList.add('visible');
-  }
-}
-
-function dismissWelcomePopup() {
-  localStorage.setItem('tcp-welcome-seen', '1');
-  document.getElementById('welcome-overlay').classList.remove('visible');
 }
 
 function initPopups() {
-  const isMobile = window.innerWidth <= 768;
+  const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   if (isMobile) {
     document.getElementById('mobile-overlay').classList.add('visible');
-  } else if (!localStorage.getItem('tcp-welcome-seen')) {
-    document.getElementById('welcome-overlay').classList.add('visible');
   }
 }
 
