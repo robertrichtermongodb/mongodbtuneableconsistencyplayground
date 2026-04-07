@@ -8,8 +8,8 @@ function handleWrite() {
   const w  = document.getElementById('sel-w').value;
   const wResolved = w === 'majority' ? 'majority' : parseInt(w, 10);
   const j  = document.getElementById('sel-j').value === 'true';
-  log(`─── Write: w:${wResolved}, j:${j} ───`, 'info');
-  runEngine(buildWriteSteps(wResolved, j), writeEngine, 'write-step-panel');
+  log(`\u2500\u2500\u2500 Write: w:${wResolved}, j:${j} \u2500\u2500\u2500`, 'info');
+  runMachine(createWriteMachine(wResolved, j), writeEngine, 'write-step-panel');
 }
 
 function handleRead() {
@@ -18,8 +18,8 @@ function handleRead() {
   draw();
   const rc       = document.getElementById('sel-rc').value;
   const readPref = document.getElementById('sel-readpref').value;
-  log(`─── Read: rc:${rc}, readPref:${readPref} ───`, 'info');
-  runEngine(buildReadSteps(rc, readPref), readEngine, 'read-step-panel');
+  log(`\u2500\u2500\u2500 Read: rc:${rc}, readPref:${readPref} \u2500\u2500\u2500`, 'info');
+  runMachine(arrayMachine(buildReadSteps(rc, readPref)), readEngine, 'read-step-panel');
 }
 
 function handleSnapshotStart() {
@@ -30,8 +30,8 @@ function handleSnapshotStart() {
   draw();
   const readPref = document.getElementById('sel-readpref').value;
   const snapLabel = state.readClient.sessionSnapshotId > 0 ? `v${state.readClient.sessionSnapshotId}` : 'none';
-  log(`─── Snapshot session started @ ${snapLabel} ───`, 'info');
-  runEngine(buildReadSteps('snapshot', readPref, state.readClient.sessionSnapshotId), readEngine, 'read-step-panel');
+  log(`\u2500\u2500\u2500 Snapshot session started @ ${snapLabel} \u2500\u2500\u2500`, 'info');
+  runMachine(arrayMachine(buildReadSteps('snapshot', readPref, state.readClient.sessionSnapshotId)), readEngine, 'read-step-panel');
 }
 
 function handleSnapshotReadAgain() {
@@ -41,8 +41,8 @@ function handleSnapshotReadAgain() {
   draw();
   const readPref = document.getElementById('sel-readpref').value;
   const snapLabel = state.readClient.sessionSnapshotId > 0 ? `v${state.readClient.sessionSnapshotId}` : 'none';
-  log(`─── Snapshot reread @ ${snapLabel} ───`, 'info');
-  runEngine(buildReadSteps('snapshot', readPref, state.readClient.sessionSnapshotId), readEngine, 'read-step-panel');
+  log(`\u2500\u2500\u2500 Snapshot reread @ ${snapLabel} \u2500\u2500\u2500`, 'info');
+  runMachine(arrayMachine(buildReadSteps('snapshot', readPref, state.readClient.sessionSnapshotId)), readEngine, 'read-step-panel');
 }
 
 function handleSnapshotEnd() {
@@ -91,8 +91,8 @@ function handleElection() {
   resetWriteVisual();
   resetReadVisual();
   draw();
-  log('─── Election triggered ───', 'warn');
-  runEngine(buildElectionSteps(), electionEngine, 'write-step-panel');
+  log('\u2500\u2500\u2500 Election triggered \u2500\u2500\u2500', 'warn');
+  runMachine(arrayMachine(buildElectionSteps()), electionEngine, 'write-step-panel');
 }
 
 function resetScenario() {
@@ -117,34 +117,37 @@ canvas.addEventListener('click', e => {
 
   if (hit.type === 'node') {
     const n = state.nodes[hit.key];
-    const wasAlive = n.alive;
     n.alive = !n.alive;
+    const writeActive = writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted;
     if (!n.alive) {
-      // Crash: wipe volatile memory, preserve journal
       const hadUnjournaledData = n.memoryVersion > n.journalVersion;
       crashNode(hit.key);
-      log(`${n.label} taken down — memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${n.journalVersion || 'none'}).`, 'warn');
+      log(`${n.label} taken down \u2014 memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${n.journalVersion || 'none'}).`, 'warn');
     } else {
-      // Restart: recover from journal
       const recoveredVersion = n.journalVersion;
       recoverNode(hit.key);
       n.phase = 'recovering';
       draw();
       if (recoveredVersion > 0) {
-        log(`${n.label} recovering from journal — restored to v${recoveredVersion}.`, 'ok');
+        log(`${n.label} recovering from journal \u2014 restored to v${recoveredVersion}.`, 'ok');
       } else {
         log(`${n.label} restarted with empty state.`, 'info');
       }
       setTimeout(() => { if (n.alive) { n.phase = 'idle'; draw(); syncButtons(); } }, 600);
     }
-    resetWriteVisual(); resetReadVisual(); if (!electionEngine.done) resetElectionVisual();
+    if (!writeActive) resetWriteVisual();
+    resetReadVisual();
+    if (!electionEngine.done) resetElectionVisual();
   } else if (hit.type === 'link') {
     const lk = getLinkBetween(state.primaryKey, hit.key);
     if (lk) {
       state.links[lk] = !state.links[lk];
       const label = `${state.nodes[state.primaryKey].label} \u2194 ${state.nodes[hit.key].label}`;
-      log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} — document state preserved.`, state.links[lk] ? 'ok' : 'warn');
-      resetWriteVisual(); resetReadVisual(); if (!electionEngine.done) resetElectionVisual();
+      log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} \u2014 document state preserved.`, state.links[lk] ? 'ok' : 'warn');
+      const writeActive = writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted;
+      if (!writeActive) resetWriteVisual();
+      resetReadVisual();
+      if (!electionEngine.done) resetElectionVisual();
     }
   } else if (hit.type === 'clientLink') {
     if (hit.key === 'wp') {

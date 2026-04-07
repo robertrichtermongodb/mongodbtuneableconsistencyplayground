@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Audited 2026-03-15 against the official MongoDB documentation (MongoDB 8.0).*
+*Last updated 2026-04-07 against the official MongoDB documentation (MongoDB 8.0).*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -18,15 +18,15 @@ This document separates simulation behaviors into four categories:
 
 | Behavior | Where | Notes |
 |---|---|---|
-| w:0 — no ACK, async replication | simulation.js `buildWriteSteps` | Fire-and-forget, client returns immediately. |
-| w:0 + j:true — demoted to w:1 | simulation.js | Guard at top of `buildWriteSteps` overrides w to 1. |
-| w:1 — primary-only ACK before replication | simulation.js | `secsNeeded=0`, ACK after primary applies. |
-| w:2 — primary + 1 secondary before ACK | simulation.js | `secsNeeded=1`, one required, one async. |
-| w:3 — all 3 nodes before ACK | simulation.js | `secsNeeded=2`, both secondaries required. |
-| w:majority — primary + 1 secondary (majority=2) | simulation.js | Matches majority calculation for 3-node P-S-S. |
-| w:majority + j:false — fully durable on default config | simulation.js | Explain text notes `writeConcernMajorityJournalDefault:true` overrides client j. |
-| Unachievable write concern blocks; write NOT rolled back | simulation.js | Explain text correctly describes wtimeout behavior. |
-| Server-side replication continues after client disconnect | engine.js | `serverSide: true` steps run in background after abort. |
+| w:0 — no ACK, async replication | `createWriteMachine` in simulation.js | Fire-and-forget, client returns immediately. |
+| w:0 + j:true — demoted to w:1 | `createWriteMachine` in simulation.js | Guard at top of machine overrides w to 1. |
+| w:1 — primary-only ACK before replication | `createWriteMachine` | `secsNeeded=0`, ACK after primary applies. |
+| w:2 — primary + 1 secondary before ACK | `createWriteMachine` | `secsNeeded=1`, one required, one async. |
+| w:3 — all 3 nodes before ACK | `createWriteMachine` | `secsNeeded=2`, both secondaries required. |
+| w:majority — primary + 1 secondary (majority=2) | `createWriteMachine` | Matches majority calculation for 3-node P-S-S. |
+| w:majority + j:false — fully durable on default config | `createWriteMachine` | Explain text notes `writeConcernMajorityJournalDefault:true` overrides client j. |
+| Unachievable write concern blocks; write NOT rolled back | `createWriteMachine` | Explain text correctly describes wtimeout behavior. |
+| Dynamic topology adaptation during write | `createWriteMachine` | Machine re-evaluates live node liveness and link state on each `nextStep()` call, retargeting surviving secondaries when a node crashes or partitions mid-replication. |
 
 ### Read concerns
 
@@ -66,10 +66,10 @@ This document separates simulation behaviors into four categories:
 
 | Behavior | Where | Notes |
 |---|---|---|
-| Write applied to memory first, then journal | simulation.js | Two-step: `memoryVersion` set, then `journalVersion` via `journalFlush()`. |
-| j:true gates ack on journal flush | simulation.js | `ackNeedsJournal` flag controls when `ackedBy.add()` happens. |
-| w:majority gates ack on journal (default config) | simulation.js | `writeConcernMajorityJournalDefault:true` modeled: journal required for majority ack. |
-| j:false acks on memory apply (fast path) | simulation.js | Ack counted immediately on `memoryVersion` set. |
+| Write applied to memory first, then journal | `createWriteMachine` | Two-step: `memoryVersion` set, then `journalVersion` via `journalFlush()`. |
+| j:true gates ack on journal flush | `createWriteMachine` | `ackNeedsJournal` flag controls when `ackedBy.add()` happens. |
+| w:majority gates ack on journal (default config) | `createWriteMachine` | `writeConcernMajorityJournalDefault:true` modeled: journal required for majority ack. |
+| j:false acks on memory apply (fast path) | `createWriteMachine` | Ack counted immediately on `memoryVersion` set. |
 | Crash wipes memory, preserves journal | state.js `crashNode` | `memoryVersion = 0`, `journalVersion` unchanged. |
 | Crash before journal flush loses unjournaled writes | state.js `crashNode` | Acks above `journalVersion` retracted, `majorityCommitId` recomputed. |
 | Recovery from journal on restart | state.js `recoverNode` | `memoryVersion = journalVersion`. |
@@ -80,7 +80,7 @@ This document separates simulation behaviors into four categories:
 | Behavior | Where | Notes |
 |---|---|---|
 | Majority-commit is cumulative (vN committed implies all prior) | state.js `advanceMajorityCommit` | Scans backward, stops at first qualifying. |
-| Client disconnect aborts engine but server-side continues | app.js canvas click handler | Correct model of cluster-internal replication independence. |
+| Client disconnect aborts write engine cleanly | app.js canvas click handler | Engine aborted; no remaining steps execute. Server-side replication that was *already applied* to node state persists. |
 
 ---
 
@@ -90,9 +90,9 @@ This document separates simulation behaviors into four categories:
 
 **Problem:** When `w:0` and `j:true`, the simulator showed "Fire-and-forget — no ACK." Per the docs, `w:0 + j:true` demotes to `w:1` — the primary acknowledges after journal flush.
 
-**Fix:** Added a guard at the top of `buildWriteSteps`: when `w === 0 && j`, override `w` to `1` with a log message. The w:1 flow handles it from there.
+**Fix:** Added a guard at the top of `createWriteMachine`: when `w === 0 && j`, override `w` to `1` with a log message. The w:1 flow handles it from there.
 
-**File:** `simulation.js` lines 16–19.
+**File:** `simulation.js`, `createWriteMachine` function.
 
 ---
 
@@ -102,7 +102,7 @@ This document separates simulation behaviors into four categories:
 
 **Fix:** Changed the ACK text to always say "Fully durable" for `w:majority`, with an italic note when `j:false` explaining the server default override.
 
-**File:** `simulation.js`, ACK step in `buildWriteSteps`.
+**File:** `simulation.js`, ACK step generated by `createWriteMachine`.
 
 ---
 
@@ -116,7 +116,17 @@ This document separates simulation behaviors into four categories:
 
 ---
 
-### I4. `resolveReadTarget` ignores reader network reachability — Known limitation
+### ~~I4. Static step array didn't adapt to topology changes during write~~ ✅ Fixed
+
+**Problem:** The old `buildWriteSteps()` function pre-computed an ordered list of steps before the write started. If a secondary crashed mid-replication, the pre-built steps would still target it, producing incorrect behavior (e.g., ACKing the client for data that was never replicated to a surviving node).
+
+**Fix:** Replaced `buildWriteSteps()` with `createWriteMachine()` — a lazy step generator that evaluates live topology on each `nextStep()` call. The machine dynamically retargets surviving secondaries when a node crashes or a link partitions mid-replication. Run-time liveness guards in each step's `run()` function handle the edge case where a node dies between step generation and execution.
+
+**File:** `simulation.js` (`createWriteMachine`), `engine.js` (`runMachine`), `app.js` (handler updates).
+
+---
+
+### I5. `resolveReadTarget` ignores reader network reachability — Known limitation
 
 **Status:** Not fixed. Acknowledged as a model simplification.
 
@@ -140,7 +150,7 @@ This document separates simulation behaviors into four categories:
 | P8 | Oplog ack vs query visibility | Ack and visibility simultaneous | MongoDB 8.0+: oplog ack durable, collection apply async | Hard to show in a single-doc model |
 | P9 | Snapshot timestamps | Integer version IDs | `atClusterTime` oplog timestamps | Functionally equivalent for single-doc model |
 | P10 | Election trigger | Manual (user clicks button) | Automatic after `electionTimeoutMillis` (10s default) | Acceptable for step-by-step pedagogy |
-| P11 | Reader network model | Single `rp` boolean for all nodes | Per-node connectivity from the client | See I4; simplification of the model |
+| P11 | Reader network model | Single `rp` boolean for all nodes | Per-node connectivity from the client | See I5; simplification of the model |
 
 ---
 
@@ -167,7 +177,7 @@ This document separates simulation behaviors into four categories:
 
 | Category | Count |
 |---|---|
-| Correct | ~30 behaviors (including 8 new storage-layer behaviors) |
-| ~~Incorrect~~ Fixed | 3 of 4 (I4 deferred as known limitation) |
+| Correct | ~31 behaviors (including 8 storage-layer + dynamic topology adaptation) |
+| ~~Incorrect~~ Fixed | 4 of 5 (I5 deferred as known limitation) |
 | Imprecise | 11 |
 | Missing | 12 |

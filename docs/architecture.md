@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Generated 2026-03-15 from a complete review of the live codebase.*
+*Last updated 2026-04-07 from a complete review of the live codebase.*
 
 ---
 
@@ -22,9 +22,16 @@ js/
   logger.js             — log() function (separated to break circular dep)
   icons.js              — SVG Path2D constants (ICON_LEAF, ICON_RS)
   draw.js               — canvas rendering, hit testing, consistency overlays, layout
-  engine.js             — step engines, syncButtons, showStepPanel, auto-finish
-  simulation.js         — buildWriteSteps(), buildReadSteps(), buildElectionSteps()
+  engine.js             — step engines, runMachine, arrayMachine, syncButtons, showStepPanel, auto-finish
+  simulation.js         — createWriteMachine(), buildReadSteps(), buildElectionSteps()
   app.js                — event handlers, popup logic, init
+test/
+  helpers.js            — VM-based test harness loading source files with browser stubs
+  state.test.js         — unit tests for state.js pure functions
+  machine.test.js       — write machine scenario tests (w:1, w:majority, crash-retarget, etc.)
+  reads.test.js         — read concern + preference scenario tests
+  election.test.js      — election scenario tests (quorum, rollback, winner selection)
+package.json            — npm test script (node --test, zero dependencies)
 docs/
   architecture.md       — this file
   correctness.md        — correctness audit: correct / incorrect / imprecise / missing
@@ -36,6 +43,8 @@ index.v1–v6.html        — legacy HTML snapshots (not used)
 ```
 
 Script load order: `state.js → logger.js → icons.js → draw.js → engine.js → simulation.js → app.js`. No build step; deployable to GitHub Pages as static files.
+
+Test runner: Node.js built-in `node --test` (Node 18+). Run with `npm test`. Tests use `node:vm` to load source files in an isolated context with browser globals stubbed.
 
 ---
 
@@ -112,26 +121,39 @@ Three engine instances, all structurally identical:
 
 ```javascript
 { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false,
-  done: false, aborted: false, _autoFinishId: null }
+  done: false, aborted: false, _autoFinishId: null, _machine: null }
 ```
 
-- **writeEngine** — drives write step sequences
+- **writeEngine** — drives the write state machine
 - **readEngine** — drives read step sequences
 - **electionEngine** — drives election steps; **borrows the write panel** (the write step panel switches to "ELECTION" mode via CSS class `.election-mode`)
 
-### `runEngine(steps, eng, panelId)`
+### `runMachine(machine, eng, panelId)`
 
-Iterates through step array. Step 0 runs immediately; subsequent steps wait for user click via `waitForClick()`. If engine is aborted mid-run, remaining `serverSide: true` steps execute in the background. On completion, `eng.done = true` and `syncButtons()` is called.
+Unified engine loop that drives any **machine** (lazy generator or wrapped array). The machine produces steps one at a time via `machine.nextStep()`. Each step is displayed in the panel, waits for user click via `waitForClick()`, then executes. Step 0 runs immediately; subsequent steps wait.
+
+The engine's `steps` array is the machine's growing `history`, so `showStepPanel` and `syncButtons` work unchanged. The step badge shows "Step X of Y+" while the machine isn't done.
+
+If the engine is aborted (via `abortEngine` or `resetEngine`), the `while` loop breaks cleanly — **no remaining steps are executed after abort**.
+
+### `arrayMachine(steps)`
+
+Wraps a pre-built step array (from `buildReadSteps` or `buildElectionSteps`) as a machine with the `{ history, isDone, nextStep() }` interface.
 
 ### `resetEngine(eng)`
 
-Centralised field reset: aborts, resolves any pending waitForClick promise, clears all fields, cancels any auto-finish interval. Used by `resetWriteVisual()`, `resetReadVisual()`, `resetElectionVisual()`.
+Centralised field reset: aborts, resolves any pending waitForClick promise, clears all fields including `_machine`, cancels any auto-finish interval. Used by `resetWriteVisual()`, `resetReadVisual()`, `resetElectionVisual()`.
+
+### `_autoFinish(eng, advanceFn)` / `autoFinishWrite|Read|Election()`
+
+Skips animations (`setSkipAnimations(true)`) and drives the engine to completion instantly via a 10ms polling interval that resolves `waitForClick` when the engine is idle. Used by the "Finish" button.
 
 ### `syncButtons()`
 
 Called after every state transition. Manages:
 - Write start button: disabled during `writeActive || electionActive`; tooltip explains why
 - Write panel Next/Finish: routes to election engine if `electionActive`, else write engine (via `handleWritePanelNext()` / `handleWritePanelFinish()`)
+- Finish buttons: disabled and greyed out until the engine's first step has started (`idx === -1`)
 - Read start button: disabled during `readActive`; tooltip
 - Snapshot session buttons: disabled with per-button tooltip reasons
 - `sel-w`, `sel-j`: locked during `writeActive` with tooltip
@@ -141,27 +163,45 @@ Called after every state transition. Manages:
 
 ### `showStepPanel(i, eng, panelId)`
 
-Uses `PANEL_EL_IDS` lookup map (not string manipulation). Step explain text rendered inside `<details open>` (collapsible by user, expanded by default).
+Uses `PANEL_EL_IDS` lookup map (not string manipulation). Step explain text rendered inside `<details>` (collapsed by default; open/closed state persisted across step transitions).
 
 ---
 
-## 5. Simulation Step Builders (`js/simulation.js`)
+## 5. Simulation (`js/simulation.js`)
 
-### `buildWriteSteps(w, j)`
+### `createWriteMachine(w, j)` — lazy step generator
 
+Returns a machine `{ history, isDone, nextStep() }` that dynamically evaluates the live topology to decide the next step. When a node crashes or a link partitions mid-replication, the machine re-targets remaining alive secondaries automatically.
+
+**Internal phase progression:** `send` → `primaryMem` → `primaryJournal` → `repl` → `done` (with `fireForget` branch for w:0)
+
+**Internal state tracked across steps:**
+- `replicated: Set` — secondaries with both memory + journal done
+- `memApplied: Set` — secondaries with memory done, awaiting journal
+- `pendingJournal: nodeKey|null` — secondary whose journal step is next
+- `acked: bool` — whether the ACK has been sent to the client
+
+**Step generation logic:**
 0. Guard: `w:0 + j:true` → demote to `w:1` (per MongoDB docs, server requires primary ACK after journal flush)
-1. Guard: writer disconnected → error
-2. Guard: primary dead → error (explains "Use Trigger Election button")
+1. Guard: writer disconnected → error step → done
+2. Guard: primary dead → error step → done
 3. Client sends particle → primary
-4. **Primary memory apply** (serverSide) — `memoryVersion = nextId`. If `j:false` and not w:majority: ack counted here.
-5. **Primary journal flush** (serverSide) — `journalVersion = nextId`. If `j:true` or w:majority: ack counted here. Shows whether ack is gated on journal or async.
-6. `w:0` → fire-and-forget with parallel async replication (each secondary: memory apply → delayed journal flush)
-7. If unachievable → replication + write concern error
-8. Required secondaries: **memory apply** step + **journal flush** step each → ACK → async secondaries same pattern
-9. ACK text for `w:majority` always says "Fully durable" (notes that default `writeConcernMajorityJournalDefault:true` overrides client j:false)
-10. Final step resets all alive nodes to idle
+4. **Primary memory apply** — `memoryVersion = nextId`. If `j:false` and not `w:majority`: ack counted here.
+5. **Primary journal flush** — `journalVersion = nextId`. If `j:true` or `w:majority`: ack counted here.
+6. `w:0` → fire-and-forget step with parallel async replication → done
+7. **Replication loop** (the dynamic heart, evaluated on each `nextStep()` call):
+   - If `pendingJournal` exists and node is reachable → journal flush step
+   - If `pendingJournal` exists but node crashed/partitioned → skip, retarget
+   - If write concern satisfied and not yet acked → ACK step
+   - If eligible secondary available → memory apply step (sets `pendingJournal`)
+   - If write concern NOT satisfied and no more secondaries → error step
+   - If all replication done → cleanup step (reset nodes to idle)
+
+Run-time liveness guards in step `run()` functions ensure that if a node dies between `nextStep()` (step generation) and `step.run()` (step execution), the step skips gracefully and the machine retargets on the next iteration.
 
 ### `buildReadSteps(rc, readPref, snapshotOverrideId?)`
+
+Returns a pre-built step array (wrapped with `arrayMachine` in app.js).
 
 1. Guard: reader disconnected → error
 2. Resolve target via `resolveReadTarget()`
@@ -171,6 +211,8 @@ Uses `PANEL_EL_IDS` lookup map (not string manipulation). Step explain text rend
 6. Return data particle → client
 
 ### `buildElectionSteps()`
+
+Returns a pre-built step array (wrapped with `arrayMachine` in app.js).
 
 1. Picks candidates: alive non-primary nodes sorted by `memoryVersion` descending
 2. **Quorum check:** requires `totalAlive >= majority` (2 of 3). If not met, returns error step explaining RAFT majority requirement
@@ -188,14 +230,14 @@ Draw cycle order:
 4. `drawWriteClientLine()` / `drawReadClientLine()` — to current primary / resolved target
 5. `drawNode()` for each node — role determined dynamically by `k === state.primaryKey`; candidate phase shows purple dashed ring; recovering phase shows blue dashed ring
 6. `drawWriteClient()` / `drawReadClient()` — session ring + "Session @ vX" label when active
-7. `drawDocLedger()` — floating box showing doc #1 state (in-flight vs committed vs durable)
+7. `drawDocLedger()` — floating box between clients showing doc #1 state (in-flight vs committed vs durable)
 8. `drawParticles()` — eased animation at `PARTICLE_MS=1400ms`
 9. `updateConsistencyViews()` — writer/reader HTML overlays
 10. `updateReadActionControls()` — snapshot button visibility
 
 ### Node doc badge (two-row storage layers)
 
-`drawNodeDocBadge(node)` renders a **two-row stacked badge** below each node:
+`drawNodeDocBadge(node)` renders a **two-row stacked badge** below each node, always visible (even at v0):
 
 ```
 ┌──────────────┐
@@ -205,17 +247,23 @@ Draw cycle order:
 └──────────────┘
 ```
 
-When memory is ahead of disk (data in cache but not journaled), a down-arrow indicator appears between rows. When both are 0 (no data), a single dim dash is shown.
+When memory is ahead of disk (data in cache but not journaled), a down-arrow indicator appears between rows.
 
 `canvasW`/`canvasH` cached in `resizeCanvas()` (not re-read via `getBoundingClientRect()` per frame). `sel-w`/`sel-rc`/`sel-readpref` read once per draw cycle and passed as arguments.
 
+Layout: `computeLayout()` uses fixed absolute `topY = 40` (clients) and `nodeY = 245` (nodes) for consistent spacing regardless of canvas height. Canvas height is `365px`.
+
 ### Hit testing
 
-`hitTest(mx, my)` → `{ type: 'node'|'link'|'clientLink', key }`. Uses `pointToSegDist` for line click detection with `NR+8`/`CR+5` dead zones around nodes/clients.
+`hitTest(mx, my)` → `{ type: 'node'|'link'|'clientLink', key }`. Node hits use `NR + 5` radius; link hits use `pointToSegDist` with `NR + 8` dead zones around endpoints; client link hits use `CR + 5`.
 
 ### Canvas election button
 
 A `<button>` absolutely positioned inside `.stage`, shown/hidden by `syncButtons()`. Positioned at `(14 + pNode.x, 14 + pNode.y + NR + 18)` via inline style when the current primary is dead and candidates exist. Includes RAFT tooltip on hover.
+
+### Animation control
+
+`skipAnimations` flag and `setSkipAnimations()` accessor. When true, `awaitParticle()` and `delay()` resolve instantly — used by the "Finish" button for instant completion.
 
 ---
 
@@ -225,11 +273,17 @@ A `<button>` absolutely positioned inside `.stage`, shown/hidden by `syncButtons
 
 All via `addEventListener` (no inline `onclick`). Button IDs: `btn-reset`, `btn-write-start`, `btn-write-next`, `btn-write-finish`, `btn-read-start`, `btn-read-session-start`, `btn-read-session-again`, `btn-read-session-end`, `btn-read-next`, `btn-read-finish`, `btn-canvas-election`, `btn-dismiss-welcome`, `btn-dismiss-wip`.
 
+### Write/Read/Election handlers
+
+- `handleWrite()` → `runMachine(createWriteMachine(w, j), writeEngine, 'write-step-panel')`
+- `handleRead()` → `runMachine(arrayMachine(buildReadSteps(rc, readPref)), readEngine, 'read-step-panel')`
+- `handleElection()` → `runMachine(arrayMachine(buildElectionSteps()), electionEngine, 'write-step-panel')`
+
 ### Canvas interaction
 
-- **Node click:** toggle alive/dead. On kill: `crashNode()` wipes memory, preserves journal, retracts memory-only acks, recomputes majority. On restart: `recoverNode()` restores memory from journal, enters `recovering` phase for 600ms. Resets write, read, and election visuals (but NOT document state).
-- **Link click:** toggle partition via `getLinkBetween()`; same resets
-- **Client link click:** toggle wp/rp; if mid-engine, aborts that engine and marks client as error; server-side steps continue in background
+- **Node click:** toggle alive/dead. On kill: `crashNode()` wipes memory, preserves journal, retracts memory-only acks, recomputes majority. On restart: `recoverNode()` restores memory from journal, enters `recovering` phase for 600ms. **If a write is in progress, the write engine is NOT reset** — the write machine adapts dynamically on its next `nextStep()` call. Read and election engines are reset.
+- **Link click:** toggle partition via `getLinkBetween()`; same behavior — write engine preserved if active, read/election reset
+- **Client link click:** toggle wp/rp; if mid-engine, aborts that engine and marks client as error
 
 ### Popups
 
@@ -257,7 +311,7 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 │            │  │ ELECTION │          │ │                   │
 │            │  └──────────┴──────────┘ │                   │
 ├────────────┴──────────────────────────┴───────────────────┤
-│ Canvas stage (position:relative)                           │
+│ Canvas stage (position:relative, height:365px)             │
 │  [writer overlay]    [animation area]   [reader overlay]   │
 │  [Write Client]      [doc ledger]       [Read Client]      │
 │       │                                      │             │
@@ -269,13 +323,36 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 ├───────────────────────────────────────────────────────────┤
 │ Event log (monospace, max-height:120px, scrollable)         │
 ├───────────────────────────────────────────────────────────┤
-│ Footer (author, docs links, GitHub, disclaimer)             │
+│ Footer (docs links, GitHub, disclaimer)                     │
 └───────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 9. Known Bugs & Limitations
+## 9. Testing (`test/`)
+
+74 tests across 4 files, zero external dependencies. Uses Node's built-in `node:test` runner.
+
+### Test harness (`test/helpers.js`)
+
+Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isolated V8 context with browser globals stubbed:
+- `log`, `draw`, `startAnimLoop` → no-ops
+- `awaitParticle` → immediately calls `onArrive` callback and resolves
+- `skipAnimations = true` → `delay()` resolves instantly
+- Minimal DOM stubs for `syncButtons` compatibility
+
+### Test coverage
+
+| File | Tests | Covers |
+|---|---|---|
+| `state.test.js` | 27 | `journalFlush`, `crashNode` (ack retraction, majority recompute), `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget`, `getServedVersion`, `isReachableForWrite` |
+| `machine.test.js` | 23 | Write machine: w:1/2/3/majority/0, j:true/false, w:0+j:true demotion, writer disconnect, primary down, **crash-retarget** (the original bug), unsatisfiable wc, link partition, sequential writes, node phase transitions |
+| `reads.test.js` | 13 | Read steps: rc:local (dirty flag), rc:majority (frozen), rc:linearizable (blocks), rc:snapshot (session lock), reader disconnect, primary dead fallback |
+| `election.test.js` | 11 | Election: winner selection (highest oplog), quorum failure, rollback of uncommitted writes, majority-committed preserved, version capping, snapshot session invalidation |
+
+---
+
+## 10. Known Bugs & Limitations
 
 > For a full correctness audit (correct / incorrect / imprecise / missing), see `docs/correctness.md`.
 
@@ -286,9 +363,10 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 | ~~B1~~ | ~~**`w:0 + j:true` not demoted to `w:1`** — simulator showed fire-and-forget; MongoDB demotes to w:1.~~ | High | ✅ Fixed |
 | ~~B2~~ | ~~**`w:majority + j:false` explain text wrong** — implied fragility on default config where `writeConcernMajorityJournalDefault:true` overrides j.~~ | Medium | ✅ Fixed |
 | ~~B3~~ | ~~**Election succeeded with 1 alive node** — RAFT requires majority (2 of 3). Simulator allowed election with 1 secondary.~~ | High | ✅ Fixed |
-| B4 | **`getLinkBetween` only knows primary↔s1 and primary↔s2 slot pairs** — after election where s1 becomes primary, the s1↔s2 link returns `null`. Partition toggling between the new primary and remaining secondary doesn't work. | Medium | Open |
-| B5 | **`resolveReadTarget` ignores reader network reachability** — checks `node.alive` but not per-node reader connectivity. Single `rp` boolean is a model simplification. | Low | Known limitation |
-| B6 | **Old primary toggled back online after election** — comes alive with "Old Primary" label but doesn't trigger rollback/sync. After election, if the NEW primary is killed for a second election, `getLinkBetween` returns `null` for the new topology. | Medium | Open (depends on B4) |
+| ~~B4~~ | ~~**Static step array didn't adapt to topology changes** — crashing a node mid-replication still produced ACK from retracted acks.~~ | High | ✅ Fixed (write state machine) |
+| B5 | **`getLinkBetween` only knows primary↔s1 and primary↔s2 slot pairs** — after election where s1 becomes primary, the s1↔s2 link returns `null`. Partition toggling between the new primary and remaining secondary doesn't work. | Medium | Open |
+| B6 | **`resolveReadTarget` ignores reader network reachability** — checks `node.alive` but not per-node reader connectivity. Single `rp` boolean is a model simplification. | Low | Known limitation |
+| B7 | **Old primary toggled back online after election** — comes alive with "Old Primary" label but doesn't trigger rollback/sync. After election, if the NEW primary is killed for a second election, `getLinkBetween` returns `null` for the new topology. | Medium | Open (depends on B5) |
 
 ### Design Limitations
 
@@ -303,59 +381,12 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 
 ---
 
-## 10. Anticipated Improvements
-
-### Design
-
-| Area | Current State | Improvement |
-|---|---|---|
-| **Typography scale** | 10+ CSS rem sizes + separate px sizes on canvas; visually inconsistent | Define 4–5 named type steps via CSS variables; use a `BASE_FONT` constant for canvas |
-| **Config panel headers** | 0.75rem, same visual weight as field labels | Increase to 0.85rem+, heavier weight to read as section titles |
-| **Node health indicator** | 7px dot at top-right of node circle, easy to miss | Increase to 10px or consolidate with the main border color |
-| **Node phase readability** | Phase communicated only by border/fill color (very similar shades) | Add small phase label inside node ("ACK", "ERR", "READ") during non-idle phases |
-| **Consistency overlays** | Fixed 148px width, updated 60×/sec from inside `draw()` | Move updates out of render loop to step transitions only; use `min-width` |
-| **Step badge vs dots** | Both show the same "step N of M" information redundantly | Remove the text badge; enlarge dots slightly |
-| **Primary/secondary role badges** | Distinguished only by border color and text label | Add a crown/"P" icon in the primary node, "S" in secondaries |
-| **Dirty read visual** | Only flagged in overlay with ⚠ text | Also highlight the version badge on the read client circle in amber |
-| **Consistency overlay symbols** | ◎ used for both fire-and-forget and in-flight (different meanings) | Use distinct symbols: ✓/◉ committed, ⏳ in-flight, ○ unconfirmed, ✕ error |
-
-### UX
-
-| Area | Current State | Improvement |
-|---|---|---|
-| **Pure-animation steps** | Require "Next →" click even when nothing to decide | Auto-advance after particle arrives for steps with no pedagogical pause |
-| **Finish button prominence** | "Finish ▶▶" is secondary style; "Next →" is primary | Swap: make "Finish" primary green after step 2; or hide "Finish" until step 2 |
-| **Snapshot buttons** | All three shown at once when rc=snapshot; two disabled pre-session | Show only "Start session & read" initially; reveal others after session starts |
-| **Snapshot session invalidation** | Silently logged in event log; no visual reaction in panel or buttons | Flash session indicator red + show "Session invalidated" label + disable "Read again" with tooltip |
-| **`w:2` vs `w:majority` explanation** | Both offered without distinguishing context | Add a tooltip or note that on a 3-node set these are equivalent |
-| **`rc:available` explanation** | Appears identical to `rc:local` | Add an inline note: "On replica sets, identical to local. On sharded clusters, may return orphaned documents." |
-| **Step explain text** | Currently `<details open>` — expanded by default | Consider defaulting to collapsed after the user has seen 2+ steps; or adding a global "verbose / concise" toggle |
-
-### Supported Simulation Scenarios
-
-| Scenario | Current Coverage | What's Needed |
-|---|---|---|
-| **1 — Dirty read + rollback (weak concerns)** | Full via write w:1 → read rc:local → kill primary → trigger election → rollback | Done |
-| **2 — Safe read + retry (strong concerns)** | Partial — core T2–T4 insight works; no auto-retry after election | Add retryable write simulation (auto re-issue after election) |
-| **3 — Minority node failure** | Full — kill a secondary, writes continue; kill primary, election available | Done |
-| **4 — Majority failure → read-only** | Partial — write blocks, majority reads frozen | Add explicit "Cluster read-only" banner on canvas + reconfiguration button |
-| **5 — Total node loss** | Minimal — all-dead state reachable, reads/writes fail | Add a "Restore from backup" conceptual step |
-| **6–8 — Multi-region / chaos / latency** | Not covered | Out of scope for 3-node simulator; would need a new tool |
-| **Post-election fault injection** | Broken — `getLinkBetween` returns null for s1↔s2 | Fix link topology to support dynamic primary slot |
-| **Second election after first** | Partially broken due to B1/B2 | Fix requires rethinking link keys as dynamic rather than slot-based |
-| **`readPreference: nearest`** | Not implemented | Add option with simulated per-node latency constants |
-| **Causal consistency sessions** | Not implemented | Could extend snapshot session model with `afterClusterTime` semantics |
-| **Second application client** | Not implemented | High canvas complexity; lower priority |
-
----
-
 ## 11. Codebase Health
 
 ### Resolved (from prior reviews)
 
 - CSS extracted to `css/style.css`
 - Inline `onclick` replaced with `addEventListener`
-- `js/v6/` deleted
 - Engine reset centralised in `resetEngine()`
 - Auto-finish merged into shared `_autoFinish()`
 - `PANEL_EL_IDS` lookup replaces string manipulation
@@ -363,15 +394,16 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 - DOM reads (`sel-w`, `sel-rc`, `sel-readpref`) done once per draw frame
 - `resolveReadTarget` moved to `state.js` to break circular dep
 - `hoverTarget` encapsulated via `getHoverTarget()`/`setHoverTarget()` accessors
-- `aria-label` on canvas, `for` on all labels
+- `aria-label` on canvas, `for` on all `<label>` elements
 - Welcome popup shown once via `localStorage`
 - `rp`/`wp` link reset on concern/preference change
+- `w:0 + j:true` demoted to `w:1` — guard at top of `createWriteMachine`
+- Write flow refactored from static step array to **lazy state machine** with dynamic topology adaptation
+- Test suite (74 tests) covering state helpers, write machine, read steps, and elections
 
 ### Open
 
 | Item | Notes |
 |---|---|
-| **Everything is still global scope** — `<script src>` loading, no ES modules | The prior review mentions ES module conversion as done, but the live codebase uses plain `<script src>` tags with no `export`/`import`. Either the module conversion was lost or was only done on a branch. |
-| **No `<label for>` on all selects** | The live `index.html` does have `for` attributes — confirmed present. |
+| **Everything is still global scope** — `<script src>` loading, no ES modules | All functions are global; works but limits tooling and tree-shaking. |
 | **`updateConsistencyViews` called from inside `draw()`** | Re-renders DOM 60×/sec during animation. Should be moved to step transitions only. |
-| ~~**`w:0 + j:true` edge case**~~ | ~~MongoDB demotes this to `w:1` behavior.~~ ✅ Fixed — guard added in `buildWriteSteps`. |

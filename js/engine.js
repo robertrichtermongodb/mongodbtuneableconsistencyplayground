@@ -1,9 +1,9 @@
 // ═══════════════════════════════════════
 // ENGINES
 // ═══════════════════════════════════════
-const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null };
-const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null };
-const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null };
+const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
+const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
+const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
 
 function abortEngine(eng) {
   eng.aborted = true;
@@ -12,12 +12,12 @@ function abortEngine(eng) {
 
 // Centralised engine field reset — clears all engine state and cancels any auto-finish timer.
 // Resolves any pending waitForClick promise via the abort path before clearing state,
-// so runEngine's async loop terminates cleanly instead of hanging forever.
+// so runMachine's async loop terminates cleanly instead of hanging forever.
 function resetEngine(eng) {
   eng.aborted = true;
   if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
   eng.done = false; eng.idx = -1; eng.aborted = false;
-  eng.busy = false; eng.steps = [];
+  eng.busy = false; eng.steps = []; eng._machine = null;
   if (eng._autoFinishId) { clearInterval(eng._autoFinishId); eng._autoFinishId = null; }
 }
 
@@ -185,7 +185,8 @@ function showStepPanel(i, eng, panelId) {
     return;
   }
   const s = eng.steps[i];
-  document.getElementById(ids.badge).textContent  = `Step ${i+1} of ${eng.steps.length}`;
+  const totalLabel = (eng._machine && !eng._machine.isDone && !eng.done) ? `${eng.steps.length}+` : `${eng.steps.length}`;
+  document.getElementById(ids.badge).textContent  = `Step ${i+1} of ${totalLabel}`;
   document.getElementById(ids.title).textContent  = s.title;
   const explainEl = document.getElementById(ids.explain);
   const prevDetails = explainEl.querySelector('.step-details');
@@ -204,42 +205,51 @@ function showStepPanel(i, eng, panelId) {
   });
 }
 
-async function runEngine(steps, eng, panelId) {
-  eng.steps = steps; eng.idx = -1; eng.done = false; eng.busy = false; eng.aborted = false;
-  let lastCompleted = -1;
-  for (let i = 0; i < steps.length; i++) {
-    if (eng.aborted) break;
-    eng.idx = i;
-    showStepPanel(i, eng, panelId);
+// Wraps a pre-built step array as a machine (lazy generator interface).
+function arrayMachine(steps) {
+  let i = 0;
+  return {
+    history: [],
+    get isDone() { return i >= steps.length; },
+    nextStep() {
+      if (i >= steps.length) return null;
+      const s = steps[i++];
+      this.history.push(s);
+      return s;
+    },
+  };
+}
+
+// Unified engine loop — drives any machine (lazy generator or wrapped array).
+// The machine produces steps one at a time via nextStep(). Each step is shown
+// in the panel, waits for user click, then executes. The engine's `steps` array
+// is the machine's growing history, so showStepPanel/syncButtons work unchanged.
+async function runMachine(machine, eng, panelId) {
+  eng._machine = machine;
+  eng.steps = machine.history;
+  eng.idx = -1; eng.done = false; eng.busy = false; eng.aborted = false;
+
+  let step;
+  while ((step = machine.nextStep()) && !eng.aborted) {
+    eng.steps = machine.history;
+    eng.idx = machine.history.length - 1;
+    showStepPanel(eng.idx, eng, panelId);
     syncButtons();
-    if (i > 0) await waitForClick(eng);
+
+    if (eng.idx > 0) await waitForClick(eng);
     if (eng.aborted) break;
+
     eng.busy = true; syncButtons();
-    log(`▶ ${steps[i].title}`, 'info');
-    await steps[i].run();
-    lastCompleted = i;
+    log(`▶ ${step.title}`, 'info');
+    await step.run();
     eng.busy = false;
     if (eng.aborted) break;
-    if (eng.mode === 'auto' && i < steps.length - 1) {
-      await delay(AUTO_STEP_MS);
-      if (eng.aborted) break;
-    }
   }
-  if (eng.aborted && lastCompleted >= 0) {
-    const bgSteps = steps.slice(lastCompleted + 1).filter(s => s.serverSide);
-    if (bgSteps.length > 0) {
-      (async () => {
-        for (const step of bgSteps) {
-          await delay(300);
-          log(`▶ [server] ${step.title}`, 'info');
-          await step.run();
-        }
-      })();
-    }
-  }
+
   if (!eng.aborted) {
     eng.done = true;
-    showStepPanel(steps.length - 1, eng, panelId);
+    if (machine.history.length > 0)
+      showStepPanel(machine.history.length - 1, eng, panelId);
   }
   syncButtons();
 }
