@@ -629,16 +629,17 @@ const TEXTS = {
     },
 
     {
-      group: 'Lowering the guardrails',
-      subtitle: 'These scenarios show what happens when you trade the default safety guarantees for speed or availability - and why MongoDB changed the defaults in v5.0.',
+      group: 'Trading safety for speed',
+      subtitle: 'Sometimes you deliberately choose lower guarantees for better latency or throughput. These scenarios show the trade-offs - and help you decide when they\u2019re worth it.',
     },
     {
       id: 'w1-data-loss',
-      name: 'w:1 on isolated primary - data loss and rollback',
-      what: 'The primary is cut off from both secondaries. With w:1, it still accepts the write - only one node needs to confirm.' +
-        ' The client hears "write succeeded," but <strong>the data exists on a single isolated node</strong>.' +
+      name: 'w:1 on isolated primary - fast confirmation, data at risk',
+      what: '<strong>w:1 gives the fastest confirmed write</strong> - the primary responds as soon as it stores the data in memory, without waiting for any other node.' +
+        ' This is great for low-latency workloads where occasional data loss is acceptable (e.g. caching layers, session stores).' +
+        ' But here\u2019s the trade-off: the primary is cut off from both secondaries. The write "succeeds," but <strong>the data exists on a single isolated node</strong>.' +
         ' When the secondaries elect a new primary, the old primary\u2019s unconfirmed write is rolled back. The data is gone.' +
-        ' <strong>w:majority prevents this entirely</strong> - the isolated primary would refuse to confirm (see "Network partition" above).',
+        ' Compare with "Network partition" above - w:majority would have rejected the write instead.',
       next: '<strong>1.</strong> The partition is pre-configured - click <em>Set up</em>' +
         '<br><strong>2.</strong> Click <em>New doc with ID 1</em> and step through (or <em>Finish</em>) - the write "succeeds" with w:1' +
         '<br><strong>3.</strong> Click <em>Force Election</em> - secondaries elect a new primary, old primary\u2019s write is rolled back' +
@@ -647,11 +648,12 @@ const TEXTS = {
     },
     {
       id: 'dirty-read',
-      name: 'rc:local - reading data that might vanish',
-      what: 'During a w:1 write, the primary confirms before any secondary has a copy. You can observe this mid-write:' +
-        ' <strong>start a read while the write is still replicating and the secondary returns data that isn\u2019t majority-confirmed yet</strong>.' +
-        ' If the primary were to fail at this point, that data could be rolled back - but your app already saw it.' +
-        ' rc:majority prevents this by only returning data guaranteed to survive failures.',
+      name: 'rc:local - lowest latency read, stale data possible',
+      what: '<strong>rc:local gives the fastest read</strong> - the node returns whatever it has right now, with no coordination or waiting.' +
+        ' Perfect for dashboards, analytics, or any read where milliseconds matter more than perfect accuracy.' +
+        ' But here\u2019s the trade-off: during a w:1 write, you can observe data on a secondary <strong>before it\u2019s been confirmed by a majority</strong>.' +
+        ' If the primary were to fail at this point, that data could be rolled back - but your app already showed it to a user.' +
+        ' rc:majority prevents this by waiting for data guaranteed to survive failures.',
       next: '<strong>1.</strong> Click <em>New doc with ID 1</em> and step through with <em>Next</em>' +
         '<br><strong>2.</strong> After a secondary receives the data in memory (watch the step panel), <strong>start a read</strong> with <em>Query doc with ID 1</em>' +
         '<br><strong>3.</strong> The secondary returns v1 with a <strong>dirty read warning</strong> - majorityCommitId is still 0' +
@@ -660,10 +662,11 @@ const TEXTS = {
     },
     {
       id: 'fire-forget',
-      name: 'w:0 - fire-and-forget',
-      what: 'The client sends a write and immediately moves on - <strong>no confirmation, no error handling, no way to know if it worked</strong>.' +
-        ' The primary might store it, or the network might drop it. Maximum throughput, zero durability guarantee.' +
-        ' Use only when losing individual writes is acceptable (metrics, logs, etc.).',
+      name: 'w:0 - maximum throughput, zero guarantees',
+      what: '<strong>w:0 is the absolute fastest write</strong> - the client sends the data and moves on without waiting for any response.' +
+        ' Ideal for high-volume, low-value writes like metrics ingestion, click tracking, or debug logging where losing individual records is acceptable.' +
+        ' The trade-off is total: no confirmation, no error handling, no way to know if the write reached the server.' +
+        ' The primary might store it, or the network might drop it silently.',
       next: '<strong>1.</strong> Click <em>New doc with ID 1</em>' +
         '<br><strong>2.</strong> Watch - the client returns to idle instantly, no acknowledgment step',
       setup: { w: '0', j: 'false', rc: 'local', readPref: 'primary' },
