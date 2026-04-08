@@ -78,7 +78,7 @@ button.read-btn:disabled { background: var(--border); color: var(--textMuted); }
 
 /* ── Stage (full-width canvas row) ── */
 .stage { padding: 14px; position: relative; width: 100%; max-width: 1200px; }
-#canvas { display: block; width: 100%; height: 365px; }
+#canvas { display: block; width: 100%; height: 395px; }
 
 /* ── Consistency overlays (float over canvas near client icons) ── */
 .consistency-overlay {

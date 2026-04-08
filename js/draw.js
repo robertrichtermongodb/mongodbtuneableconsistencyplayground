@@ -229,10 +229,11 @@ function drawRSBox() {
   ctx.strokeStyle = T.rsBoxBorder; ctx.lineWidth = 1.8; ctx.setLineDash([6,4]);
   ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.stroke();
   ctx.setLineDash([]);
-  const isz = 17, ix = bx+12+isz/2, iy = by+9+isz/2;
-  drawIcon(ICON_RS, ix, iy, isz, T.rsBoxText);
+  const isz = 17;
+  const lx = bx + 12, ly = by + bh + 6;
+  drawIcon(ICON_RS, lx + isz/2, ly + isz/2, isz, T.rsBoxText);
   ctx.fillStyle = T.rsBoxText; ctx.font = '12px system-ui'; ctx.textAlign = 'left';
-  ctx.fillText('Replica Set  \u00B7  3-node P-S-S  \u00B7  majority = 2', bx+12+isz+6, by+17);
+  ctx.fillText('Replica Set  \u00B7  3-node P-S-S  \u00B7  majority = 2', lx + isz + 6, ly + 13);
   ctx.restore();
 }
 

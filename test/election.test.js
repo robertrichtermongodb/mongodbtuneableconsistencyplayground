@@ -30,7 +30,8 @@ describe('election — happy path (2 of 3 alive)', () => {
 
     const newPK = s().primaryKey;
     assert.equal(s().nodes[newPK].label, 'Primary');
-    assert.equal(s().nodes.primary.label, 'Old Primary');
+    assert.ok(s().nodes.primary.label.startsWith('Secondary'),
+      `old primary should become a secondary, got: ${s().nodes.primary.label}`);
   });
 
   it('picks the node with highest memoryVersion', async () => {

@@ -700,7 +700,7 @@ function buildElectionSteps() {
       state.primaryKey = winner;
       const oldLabel = winnerNode.label;
       winnerNode.label = 'Primary';
-      state.nodes[pk].label = 'Old Primary';
+      state.nodes[pk].label = oldLabel;
 
       state.doc.versions = state.doc.versions.filter(v => v.id <= state.doc.majorityCommitId);
       state.doc.latestId = state.doc.majorityCommitId;
