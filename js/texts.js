@@ -589,7 +589,7 @@ const TEXTS = {
         ' <strong>With the default w:majority, your data survives</strong> - a majority of nodes already saved it to disk before the client heard back.' +
         ' After an election, the new primary still has your document.',
       next: '<strong>1.</strong> Click <em>New doc with ID 1</em> and step through (or <em>Finish</em>)' +
-        '<br><strong>2.</strong> Click the Primary node on the canvas to crash it' +
+        '<br><strong>2.</strong> After the write completes, click the Primary node on the canvas to crash it' +
         '<br><strong>3.</strong> Click <em>Trigger Election</em> to promote a secondary' +
         '<br><strong>4.</strong> Click <em>Query doc with ID 1</em> - the data is still there',
       setup: { w: 'majority', j: 'false', rc: 'majority', readPref: 'primary' },
@@ -634,39 +634,29 @@ const TEXTS = {
     },
     {
       id: 'w1-data-loss',
-      name: 'w:1 - data confirmed, then lost',
-      what: 'With w:1, the primary tells the client "write succeeded" after storing it in memory - <strong>before any other node has a copy</strong>.' +
-        ' When the primary crashes, the data is gone forever. The client was told everything was fine.' +
-        ' This is exactly what w:majority prevents.',
-      next: '<strong>1.</strong> Click <em>New doc with ID 1</em> and step through (or <em>Finish</em>)' +
-        '<br><strong>2.</strong> Click the Primary node to crash it <em>before</em> replication completes' +
-        '<br><strong>3.</strong> Click <em>Trigger Election</em> to promote a secondary' +
+      name: 'w:1 on isolated primary - data loss and rollback',
+      what: 'The primary is cut off from both secondaries. With w:1, it still accepts the write - only one node needs to confirm.' +
+        ' The client hears "write succeeded," but <strong>the data exists on a single isolated node</strong>.' +
+        ' When the secondaries elect a new primary, the old primary\u2019s unconfirmed write is rolled back. The data is gone.' +
+        ' <strong>w:majority prevents this entirely</strong> - the isolated primary would refuse to confirm (see "Network partition" above).',
+      next: '<strong>1.</strong> The partition is pre-configured - click <em>Set up</em>' +
+        '<br><strong>2.</strong> Click <em>New doc with ID 1</em> and step through (or <em>Finish</em>) - the write "succeeds" with w:1' +
+        '<br><strong>3.</strong> Click <em>Force Election</em> - secondaries elect a new primary, old primary\u2019s write is rolled back' +
         '<br><strong>4.</strong> Click <em>Query doc with ID 1</em> - the data is gone',
-      setup: { w: '1', j: 'false', rc: 'majority', readPref: 'primary' },
+      setup: { w: '1', j: 'false', rc: 'majority', readPref: 'primary', links: { ps1: false, ps2: false } },
     },
     {
       id: 'dirty-read',
       name: 'rc:local - reading data that might vanish',
-      what: 'A secondary returns whatever it currently has - including data that hasn\u2019t been confirmed by a majority yet.' +
-        ' <strong>If the primary fails, that unconfirmed data gets rolled back, but your app already showed it to a user.</strong>' +
-        ' rc:majority prevents this by only returning data that\u2019s guaranteed to survive failures.',
-      next: '<strong>1.</strong> Click <em>New doc with ID 1</em> and step through (or <em>Finish</em>)' +
-        '<br><strong>2.</strong> Click <em>Query doc with ID 1</em> - the secondary returns unconfirmed data' +
-        '<br><strong>3.</strong> Note the "dirty read" warning in the result',
+      what: 'During a w:1 write, the primary confirms before any secondary has a copy. You can observe this mid-write:' +
+        ' <strong>start a read while the write is still replicating and the secondary returns data that isn\u2019t majority-confirmed yet</strong>.' +
+        ' If the primary were to fail at this point, that data could be rolled back - but your app already saw it.' +
+        ' rc:majority prevents this by only returning data guaranteed to survive failures.',
+      next: '<strong>1.</strong> Click <em>New doc with ID 1</em> and step through with <em>Next</em>' +
+        '<br><strong>2.</strong> After a secondary receives the data in memory (watch the step panel), <strong>start a read</strong> with <em>Query doc with ID 1</em>' +
+        '<br><strong>3.</strong> The secondary returns v1 with a <strong>dirty read warning</strong> - majorityCommitId is still 0' +
+        '<br><strong>4.</strong> After the read finishes, continue the write with <em>Next</em> / <em>Finish</em>',
       setup: { w: '1', j: 'false', rc: 'local', readPref: 'secondary' },
-    },
-    {
-      id: 'split-brain',
-      name: 'w:1 under partition - split-brain risk',
-      what: 'The primary is isolated but doesn\u2019t know it yet. With w:1 it keeps accepting writes - choosing availability over consistency (PA in CAP terms).' +
-        ' Meanwhile, the secondaries elect a new primary on their side.' +
-        ' <strong>Two primaries now exist with conflicting data. When the partition heals, the old primary\u2019s writes are rolled back.</strong>' +
-        ' w:majority prevents this entirely - the isolated primary would refuse to confirm.',
-      next: '<strong>1.</strong> The partition is pre-configured - click <em>Set up</em>' +
-        '<br><strong>2.</strong> Click <em>Force Election</em> to elect a new primary among the secondaries' +
-        '<br><strong>3.</strong> Drag the write client to the old (isolated) primary' +
-        '<br><strong>4.</strong> Write to it - the write "succeeds" with w:1 but is doomed to rollback',
-      setup: { w: '1', j: 'false', rc: 'majority', readPref: 'primary', links: { ps1: false, ps2: false } },
     },
     {
       id: 'fire-forget',
