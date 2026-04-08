@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Last updated 2026-03-15 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 18 (Refinement 3).*
+*Last updated 2026-04-08 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 19.*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -90,6 +90,9 @@ This document separates simulation behaviors into four categories:
 | Failed write rolls back `latestId` and version entry | simulation.js `failWrite` | Prevents stale UI state (e.g., "Update" button when no doc exists). |
 | Reads don't change node write-state colors | simulation.js `buildReadSteps` | Read operations don't mutate node phases — node colors reflect write concern state only. |
 | All user-facing texts centralized | texts.js | Single source of truth for all step titles, explains, tooltips, and consistency views. |
+| Topology-aware step messaging | simulation.js, texts.js | `topo` context computed once at machine creation; `topoNote` appended to key steps (ACK, replComplete, fireForget) to surface degraded-topology implications. |
+| CAP trade-off messaging | texts.js | w:majority error → CP explanation; w:1 ACK → PA explanation. Both note primary step-down timing. |
+| Linearizable-specific error | simulation.js, draw.js | `readClient.errorReason = 'linearizable'` → dedicated "Leadership not confirmed" message in step panel and read-status box, distinct from generic "No eligible node." |
 | Split-brain: w:1 succeeds on partitioned primary | simulation.js | Partitioned primary has `reachableCount=1 >= 1`, write succeeds locally. |
 | Split-brain: w:majority fails on partitioned primary | simulation.js | Partitioned primary has `reachableCount=1 < 2`, cannot achieve write concern. |
 | Split-brain: partition-aware election in secondary majority | simulation.js | `buildElectionSteps({ forcePartition: true })` uses `getPartition()` to find majority partition among connected secondaries. |
@@ -220,7 +223,7 @@ This document separates simulation behaviors into four categories:
 
 | Category | Count |
 |---|---|
-| Correct | ~51 behaviors (13 write concern + 13 read concern + 4 read preference + 4 election + 8 storage-layer + 9 split-brain/topology/targeting) |
+| Correct | ~54 behaviors (13 write concern + 13 read concern + 4 read preference + 4 election + 8 storage-layer + 12 split-brain/topology/targeting/messaging) |
 | ~~Incorrect~~ Fixed | 7 of 8 (I6 deferred as known limitation) |
 | Imprecise | 11 |
 | Missing | 12 (M1 partially addressed) |

@@ -48,9 +48,9 @@ let clientDragged = { write: false, read: false };
 
 function computeLayout(W, H) {
   const cx = W / 2;
-  const topY    = 40;
-  const priY    = 185;
-  const secY    = 310;
+  const topY    = 60;
+  const priY    = 205;
+  const secY    = 330;
   const spread  = Math.min(220, W * 0.26);
 
   if (!clientDragged.write) { state.writeClient.x = cx - spread; state.writeClient.y = topY; }
@@ -197,13 +197,21 @@ function draw() {
   if (resetBtn) resetBtn.style.display = hasCustomUI ? 'block' : 'none';
 
   drawLockHint();
+  if (typeof debugLabelsActive !== 'undefined' && debugLabelsActive) drawDebugLabels();
 }
 
 let _lockBannerBounds = null; // { x, y, w, h } — updated each draw, used by hitTest
 
 function drawLockHint() {
   if (!isAnyEngineActive()) { _lockBannerBounds = null; return; }
-  const text = '🔒 Topology locked  ·  finish or reset to reconfigure  ·  use multi-step sequences to explore failure scenarios';
+  const wA = (writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted) || writeEngine.busy;
+  const eA = (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted) || electionEngine.busy;
+  const rA = (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted) || readEngine.busy;
+  const parts = [];
+  if (wA || eA) parts.push(eA ? 'Election' : 'Write');
+  if (rA) parts.push('Read');
+  const prefix = parts.join(' and ');
+  const text = `🔒 ${prefix} in progress - topology locked · finish or reset to reconfigure`;
   ctx.save();
   ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   ctx.textAlign = 'center';
@@ -220,6 +228,70 @@ function drawLockHint() {
   ctx.globalAlpha = 1;
   ctx.fillStyle = T.amber;
   ctx.fillText(text, canvasW / 2, canvasH - 8);
+  ctx.restore();
+}
+
+function drawDebugLabels() {
+  ctx.save();
+  const font = 'bold 9px monospace';
+  ctx.font = font;
+  ctx.textBaseline = 'top';
+
+  function badge(label, x, y) {
+    const m = ctx.measureText(label);
+    const pw = m.width + 6, ph = 13;
+    ctx.fillStyle = '#ff00cc';
+    ctx.globalAlpha = 0.88;
+    ctx.beginPath(); ctx.roundRect(x, y, pw, ph, 3); ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#fff';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, x + 3, y + 2);
+  }
+
+  Object.entries(state.nodes).forEach(([k, n]) => {
+    badge('node:' + k, n.x + NR - 4, n.y - NR - 14);
+  });
+
+  const wc = state.writeClient, rc = state.readClient;
+  badge('writeClient', wc.x - 20, wc.y - CR - 16);
+  badge('readClient', rc.x - 20, rc.y - CR - 16);
+
+  const linkSlots = { ps1: 0, ps2: 1, s1s2: 2 };
+  Object.entries(state.links).forEach(([k, _]) => {
+    if (k === 'wp' || k === 'rp') return;
+    const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
+    const pair = pairMap[k];
+    if (!pair) return;
+    const a = state.nodes[pair[0]], b = state.nodes[pair[1]];
+    if (!a || !b) return;
+    badge('link:' + k, (a.x + b.x) / 2 - 10, (a.y + b.y) / 2 - 8);
+  });
+
+  badge('link:wp', (wc.x + state.nodes[state.primaryKey].x) / 2 - 10,
+    (wc.y + state.nodes[state.primaryKey].y) / 2 - 8);
+
+  const rtKey = resolveReadTarget(
+    document.getElementById('sel-rc')?.value || 'majority',
+    document.getElementById('sel-readpref')?.value || 'primary'
+  );
+  if (rtKey) {
+    badge('link:rp', (rc.x + state.nodes[rtKey].x) / 2 - 10,
+      (rc.y + state.nodes[rtKey].y) / 2 - 8);
+  }
+
+  badge('docLedger', canvasW / 2 - 20, 12);
+  badge('rsBox', state.nodes.primary.x - NR - 30, state.nodes.primary.y - NR - 38);
+
+  Object.entries(state.nodes).forEach(([k, n]) => {
+    const bx = n.x - 40, by = n.y + NR + 12;
+    badge('mem:' + k, bx, by - 14);
+  });
+
+  if (_lockBannerBounds) {
+    badge('lockBanner', _lockBannerBounds.x, _lockBannerBounds.y - 14);
+  }
+
   ctx.restore();
 }
 
@@ -666,8 +738,8 @@ function drawIcon(path, cx, cy, size, color, viewSize = 16) {
 // CONSISTENCY OVERLAY VIEWS
 // ═══════════════════════════════════════
 function updateConsistencyViews() {
-  const wBox = document.getElementById('writer-consistency');
-  const rBox = document.getElementById('reader-consistency');
+  const wBox = document.getElementById('write-status');
+  const rBox = document.getElementById('read-status');
   const doc  = state.doc;
 
   const primaryDown = !state.nodes[state.primaryKey].alive;
@@ -737,7 +809,7 @@ function updateReadActionControls() {
   const rcVal = document.getElementById('sel-rc')?.value;
   const isSnapshot = rcVal === 'snapshot';
   const btnDefault = document.getElementById('btn-read-start');
-  const snapWrap = document.getElementById('snapshot-session-actions');
+  const snapWrap = document.getElementById('session-actions');
   if (!btnDefault || !snapWrap) return;
   btnDefault.style.display = isSnapshot ? 'none' : '';
   snapWrap.style.display = isSnapshot ? 'flex' : 'none';

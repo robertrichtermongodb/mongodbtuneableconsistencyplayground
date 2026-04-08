@@ -27,8 +27,8 @@
 </header>
 
 <!-- Topology hint + Reset -->
-<div class="topo-bar">
-  <span class="topo-hint">Click nodes to toggle health · Click links to partition · Click clients to pick target node · Drag clients to reposition</span>
+<div class="topo-bar" id="topo-bar">
+  <span class="topo-hint" id="topo-hint">Click nodes to toggle health · Click links to partition · Click clients to pick target node · Drag clients to reposition</span>
   <div style="display:flex;gap:5px">
     <button class="sec" id="btn-reset">Reset ↺</button>
     <button class="sec theme-toggle" id="btn-theme-toggle">☀</button>
@@ -44,13 +44,13 @@
     <div class="cg">
       <label for="sel-w">Write concern (w)</label>
       <select id="sel-w">
-        <option value="0">0 — fire &amp; forget</option>
-        <option value="1">1 — primary only</option>
-        <option value="2">2 — primary + 1 sec</option>
-        <option value="3">3 — all nodes</option>
+        <option value="0">0 - fire &amp; forget</option>
+        <option value="1">1 - primary only</option>
+        <option value="2">2 - primary + 1 sec</option>
+        <option value="3">3 - all nodes</option>
         <option value="majority" selected>majority</option>
       </select>
-      <span id="w-default-badge" class="config-badge config-badge-hidden"></span>
+      <span id="w-default-pill" class="config-badge config-badge-hidden"></span>
     </div>
     <div class="cg">
       <label for="sel-j">Journal (j)</label>
@@ -62,7 +62,7 @@
   </div>
 
   <!-- Center: Step panels -->
-  <div class="card step-card" id="step-card">
+  <div class="card step-card" id="step-panels-card">
     <div class="step-panels">
 
       <div class="step-panel write-step-panel" id="write-step-panel">
@@ -72,7 +72,7 @@
         <div class="step-meta">
           <span class="step-label write-label">WRITE</span>
           <span class="step-badge" id="write-step-badge"></span>
-          <div class="step-dots" id="write-step-dots"></div>
+          <div class="step-dots" id="write-progress-dots"></div>
         </div>
         <div class="phase-trail" id="write-phase-trail"></div>
         <div class="step-title" id="write-step-title"></div>
@@ -86,7 +86,7 @@
       <div class="step-panel read-step-panel" id="read-step-panel">
         <div class="panel-start">
           <button class="read-btn" id="btn-read-start">Query doc with ID 1</button>
-          <div class="snapshot-actions" id="snapshot-session-actions">
+          <div class="snapshot-actions" id="session-actions">
             <button class="read-btn" id="btn-read-session-start">Start session &amp; read</button>
             <button class="read-btn" id="btn-read-session-again">Read again</button>
             <button class="sec" id="btn-read-session-end">End session</button>
@@ -95,7 +95,7 @@
         <div class="step-meta">
           <span class="step-label read-label">READ</span>
           <span class="step-badge" id="read-step-badge"></span>
-          <div class="step-dots" id="read-step-dots"></div>
+          <div class="step-dots" id="read-progress-dots"></div>
         </div>
         <div class="step-title" id="read-step-title"></div>
         <div class="step-explain" id="read-step-explain"><span class="step-panel-idle">Probe the replica set to observe read concern behaviour.</span></div>
@@ -136,16 +136,16 @@
 
 <!-- ═══ Full-width canvas — consistency status floats over it ═══ -->
 <div class="card stage">
-  <div class="consistency-overlay write-overlay" id="writer-consistency">
+  <div class="consistency-overlay write-overlay" id="write-status">
     <div class="cb-dim">No writes issued</div>
   </div>
-  <div class="consistency-overlay read-overlay" id="reader-consistency">
+  <div class="consistency-overlay read-overlay" id="read-status">
     <div class="cb-dim">No reads completed</div>
   </div>
   <!-- Canvas-contextual election trigger — positioned via JS below the dead primary -->
   <button id="btn-canvas-election" class="canvas-election-btn">
     ⚡ Trigger Election
-    <span class="raft-hint">ⓘ RAFT consensus — hover for details</span>
+    <span class="raft-hint">ⓘ RAFT consensus - hover for details</span>
   </button>
   <!-- Force election button — shown when primary is partitioned but alive -->
   <button id="btn-canvas-force-election" class="canvas-election-btn canvas-force-election-btn">
@@ -170,7 +170,7 @@
     <h2>Event log</h2>
     <button class="sec log-clear-btn" id="btn-clear-log">Clear</button>
   </div>
-  <div id="log"></div>
+  <div id="event-log"></div>
 </div>
 
 <footer>
@@ -189,7 +189,8 @@
     <a href="https://www.mongodb.com/docs/manual/reference/read-concern/" target="_blank" rel="noopener">MongoDB Docs: Read Concern</a>
     &nbsp;·&nbsp;
     <a href="https://www.mongodb.com/docs/manual/reference/write-concern/" target="_blank" rel="noopener">MongoDB Docs: Write Concern</a>
-    &nbsp;·&nbsp; Last updated: April 8, 2026 14:30 CET
+    &nbsp;·&nbsp; Last updated: April 8, 2026 16:30 CET
+    &nbsp;·&nbsp; <button id="btn-debug">Debug</button>
   </div>
 </footer>
 

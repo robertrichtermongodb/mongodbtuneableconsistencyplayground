@@ -45,19 +45,25 @@ function syncButtons() {
   }
 
   const isFirstWrite = state.doc.latestId === 0;
+  const readBlockTip = 'Paused while a read is in progress.\n\nThis is a playground simplification - in real MongoDB, reads and writes run concurrently. Here we pause the write so the read observes a stable state, making it easier to follow what happens step by step.';
   const btnWS = document.getElementById('btn-write-start');
-  btnWS.textContent = we.aborted ? 'Retry' : isFirstWrite ? 'New doc with ID 1' : 'Update doc with ID 1';
-  btnWS.disabled    = writeActive || electionActive;
+  btnWS.textContent = isFirstWrite ? 'New doc with ID 1' : 'Update doc with ID 1';
+  btnWS.disabled    = writeActive || electionActive || readActive;
+  btnWS.setAttribute('data-tip', readActive && !writeActive ? readBlockTip : TEXTS.buttons['btn-write-start']);
 
   const activeEng  = electionActive ? ee : we;
-  const wnDis = activeEng.busy || activeEng._waitResolve === null;
-  document.getElementById('btn-write-next').disabled   = wnDis;
-  const wfDis = activeEng.idx === -1 || activeEng._waitResolve === null;
-  document.getElementById('btn-write-finish').disabled = wfDis;
+  const btnWN = document.getElementById('btn-write-next');
+  const wnDis = readActive || activeEng.busy || activeEng._waitResolve === null;
+  btnWN.disabled = wnDis;
+  btnWN.setAttribute('data-tip', readActive && writeActive ? readBlockTip : TEXTS.buttons['btn-write-next']);
+  const btnWF = document.getElementById('btn-write-finish');
+  const wfDis = readActive || activeEng.idx === -1 || activeEng._waitResolve === null;
+  btnWF.disabled = wfDis;
+  btnWF.setAttribute('data-tip', readActive && writeActive ? readBlockTip : TEXTS.buttons['btn-write-finish']);
 
   // ── Read panel ──
   const btnRS = document.getElementById('btn-read-start');
-  btnRS.textContent = re.aborted ? 'Retry' : 'Query doc with ID 1';
+  btnRS.textContent = 'Query doc with ID 1';
   btnRS.disabled    = readActive;
   updateReadActionControls();
 
@@ -112,8 +118,9 @@ function syncButtons() {
     forceBtnEl.style.display = showForce ? 'block' : 'none';
     if (showForce) {
       const s1 = state.nodes.s1, s2 = state.nodes.s2;
-      forceBtnEl.style.left = ((s1.x + s2.x) / 2 - 50) + 'px';
+      forceBtnEl.style.left = ((s1.x + s2.x) / 2) + 'px';
       forceBtnEl.style.top  = ((s1.y + s2.y) / 2 + 20) + 'px';
+      forceBtnEl.style.transform = 'translateX(-50%)';
     }
   }
 }
@@ -164,15 +171,48 @@ async function waitForClick(eng) {
   return new Promise(r => { eng._waitResolve = r; syncButtons(); });
 }
 
-const IDLE_HINT = {
-  'write-step-panel': 'Start a write to step through the replication flow.',
-  'read-step-panel':  'Probe the replica set to observe read concern behaviour.',
-};
+function getIdleSummary(panelId) {
+  if (panelId === 'write-step-panel') {
+    const w = document.getElementById('sel-w')?.value || 'majority';
+    const j = document.getElementById('sel-j')?.value || 'false';
+    return TEXTS.configSummary.write(w, j, state.doc.latestId);
+  }
+  if (panelId === 'read-step-panel') {
+    const rc = document.getElementById('sel-rc')?.value || 'local';
+    const rp = document.getElementById('sel-readpref')?.value || 'primary';
+    return TEXTS.configSummary.read(rc, rp, state.doc.latestId);
+  }
+  return { title: '', explain: '' };
+}
+
+function showIdlePanel(panelId, ids) {
+  const s = getIdleSummary(panelId);
+  document.getElementById(ids.badge).textContent = '';
+  document.getElementById(ids.title).textContent = s.title;
+  const explainEl = document.getElementById(ids.explain);
+  const prevDetails = explainEl.querySelector('.step-details');
+  const wasOpen = prevDetails ? prevDetails.open : true;
+  explainEl.innerHTML =
+    `<details class="step-details"${wasOpen ? ' open' : ''}>` +
+    `<summary class="step-details-toggle">Details</summary>` +
+    `<div class="step-explain-body">${s.explain}</div>` +
+    `</details>`;
+  document.getElementById(ids.dots).innerHTML = '';
+}
+
+function refreshIdlePanels() {
+  for (const [panelId, ids] of Object.entries(PANEL_EL_IDS)) {
+    const eng = panelId === 'write-step-panel' ? writeEngine : readEngine;
+    if (eng.idx === -1 || (eng.done && eng.steps.length === 0)) {
+      showIdlePanel(panelId, ids);
+    }
+  }
+}
 
 // Explicit DOM ID map — avoids fragile string-manipulation to derive IDs from panel names.
 const PANEL_EL_IDS = {
-  'write-step-panel': { badge: 'write-step-badge', title: 'write-step-title', explain: 'write-step-explain', dots: 'write-step-dots' },
-  'read-step-panel':  { badge: 'read-step-badge',  title: 'read-step-title',  explain: 'read-step-explain',  dots: 'read-step-dots'  },
+  'write-step-panel': { badge: 'write-step-badge', title: 'write-step-title', explain: 'write-step-explain', dots: 'write-progress-dots' },
+  'read-step-panel':  { badge: 'read-step-badge',  title: 'read-step-title',  explain: 'read-step-explain',  dots: 'read-progress-dots'  },
 };
 
 function showStepPanel(i, eng, panelId) {
@@ -180,11 +220,7 @@ function showStepPanel(i, eng, panelId) {
   if (!ids) return;
   const isWritePanel = panelId === 'write-step-panel';
   if (i < 0 || eng.steps.length === 0) {
-    document.getElementById(ids.badge).textContent = '';
-    document.getElementById(ids.title).textContent = '';
-    document.getElementById(ids.explain).innerHTML =
-      `<span class="step-panel-idle">${IDLE_HINT[panelId] || ''}</span>`;
-    document.getElementById(ids.dots).innerHTML = '';
+    showIdlePanel(panelId, ids);
     if (isWritePanel) renderPhaseTrail(eng);
     return;
   }
@@ -365,7 +401,7 @@ async function runMachine(machine, eng, panelId) {
     if (eng.aborted) break;
 
     eng.busy = true; syncButtons();
-    log(`▶ ${step.title}`, 'info');
+    logStep(step.title, step.explain || '');
     await step.run();
     eng.busy = false;
     if (eng.aborted) break;

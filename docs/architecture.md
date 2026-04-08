@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-04-08 (Iteration 19: topology locking).*
+*Last updated 2026-04-08 (Iteration 19: topology locking, scenarios panel, topology-aware messaging, debug overlay).*
 
 ---
 
@@ -229,7 +229,15 @@ The primary always flushes to journal before any replication begins, regardless 
 
 All write machine references use `effectiveWriteTarget()` instead of `state.primaryKey` directly, enabling writes to a stale primary during split-brain scenarios.
 
-**Topology locking:** The UI (`isAnyEngineActive()` in `app.js`) blocks all node, link, and client-link clicks while any engine is active. This eliminates the need for mid-operation liveness guards (`guardRun`, `guardRunAlive`, `primaryUnavailableStep` — all removed in Iteration 19). Users configure topology *before* starting an operation, then observe the result. The cursor shows `not-allowed` when hovering over locked elements.
+**Topology locking:** The UI (`isAnyEngineActive()` in `app.js`) blocks all node, link, and client-link clicks while any engine is active. This eliminates the need for mid-operation liveness guards (`guardRun`, `guardRunAlive`, `primaryUnavailableStep` — all removed in Iteration 19). Users configure topology *before* starting an operation, then observe the result. The cursor shows `not-allowed` when hovering over locked elements. A canvas banner (`drawLockHint()` in `draw.js`) explains the lock with a hover tooltip describing the complexity rationale.
+
+**Topology-aware messaging:** `createWriteMachine` computes a `topo` context object (reachable count, primaryPartitioned, allHealthy) once at creation. A `topoNote` string is derived from it and appended to key step texts (ACK, replComplete, fireForget) via `TEXTS.topoNote(topo)`. This ensures step explanations reflect the actual topology without adding branching to the state machine.
+
+**Scenarios panel:** `TEXTS.scenarios` defines two groups: "Defaults under pressure" (4 resilience scenarios) and "Lowering the guardrails" (4 risk scenarios). `initScenarios()` in `app.js` renders them as a collapsible card grid with group headers. `applyScenario()` resets state, sets config dropdowns and link topology, then logs the scenario name and next-step hint.
+
+**Debug overlay:** A "Debug" button in the footer toggles `debugLabelsActive`. DOM elements get hot-pink ID badges positioned via `getBoundingClientRect()` in a `#dbg-overlay` container. Canvas regions (nodes, clients, links, MEM/DISK badges, doc ledger, RS box, lock banner) are labeled by `drawDebugLabels()` in `draw.js`. Zero visual footprint when off.
+
+**CAP trade-off messaging:** Write concern error (`wcUnsatisfied`) explains the CP trade-off for w:majority and the PA trade-off for lower write concerns. w:1 ACK text explains the PA trade-off. Both include a note about primary step-down timing. Linearizable read blocked gets a specific error in both the step panel (dynamic getter on the return step) and the `read-status` box (`readClient.errorReason = 'linearizable'`).
 
 **Pedagogical safety notes:**
 - `isDefault` and `defaultNote` — when `w !== 'majority'`, error/ACK explain texts append a blue info note explaining that the MongoDB default (`w:majority` since v5.0) prevents the demonstrated issue.

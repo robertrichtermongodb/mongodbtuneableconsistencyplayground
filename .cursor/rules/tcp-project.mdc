@@ -10,7 +10,7 @@ alwaysApply: true
 Single-page vanilla JS app (no build step). Open `index.html` and it works.
 
 ### File load order (must stay in this sequence)
-`theme.js → state.js → texts.js → simulation.js → engine.js → draw.js → app.js`
+`theme.js → state.js → logger.js → icons.js → texts.js → draw.js → engine.js → simulation.js → app.js`
 
 ### File responsibilities — one concern per file
 | File | Owns |

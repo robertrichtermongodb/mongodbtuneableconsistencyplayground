@@ -1,15 +1,4 @@
 // ═══════════════════════════════════════
-// CONCERN LOGIC (link-aware partitioning)
-// ═══════════════════════════════════════
-function resolveW(raw) { return raw === 'majority' ? 'majority' : parseInt(raw, 10); }
-
-function canAchieve(w) {
-  if (w === 0) return true;
-  const count = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
-  return count >= (w === 'majority' ? 2 : w);
-}
-
-// ═══════════════════════════════════════
 // WRITE STATE MACHINE (lazy step generator)
 // ═══════════════════════════════════════
 // The machine evaluates the topology at each step to decide the next action.
@@ -32,6 +21,15 @@ function createWriteMachine(wOrig, j) {
   const opLabel = `${op} _id:1 \u2192 v${nextId}`;
   const isDefault = w === 'majority';
   const defaultNote = TEXTS.defaultNote;
+
+  const topo = {
+    reachable: Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length,
+    total:     Object.keys(state.nodes).length,
+    primaryPartitioned: isPrimaryPartitioned(),
+    allHealthy: Object.values(state.nodes).every(n => n.alive) &&
+                Object.entries(state.links).every(([k, v]) => k === 'wp' || k === 'rp' || v),
+  };
+  const topoNote = topo.allHealthy ? '' : TEXTS.topoNote(topo);
 
   let phase          = 'send';
   const replicated   = new Set();
@@ -115,7 +113,7 @@ function createWriteMachine(wOrig, j) {
           advanceMajorityCommit();
         }
         state.nodes[k].phase = 'acked';
-        log(`${label}: journal flushed \u2014 v${nextId} crash-safe.`, 'ok');
+        log(`${label}: journal flushed - v${nextId} crash-safe.`, 'ok');
         draw();
       },
     };
@@ -144,7 +142,7 @@ function createWriteMachine(wOrig, j) {
       if (phase === 'send' && effectiveWriteTarget() !== state.primaryKey) {
         const targetLabel = state.nodes[effectiveWriteTarget()].label;
         return failWrite(
-          `Not primary \u2014 ${targetLabel} cannot accept writes`,
+          `Not primary - ${targetLabel} cannot accept writes`,
           `<strong>MongoDB error: NotWritablePrimary.</strong> The write client is targeting <em>${targetLabel}</em>, ` +
           `which is a secondary. Only the primary can accept write operations. ` +
           `The driver would normally discover the primary automatically, but in this simulation the target was set manually.`
@@ -153,7 +151,7 @@ function createWriteMachine(wOrig, j) {
 
       if (phase === 'send' && !state.nodes[effectiveWriteTarget()].alive) {
         return failWrite(
-          `Target node is down \u2014 cannot deliver write`,
+          `Target node is down - cannot deliver write`,
           `The write client is targeting <em>${state.nodes[effectiveWriteTarget()].label}</em>, which is currently down. ` +
           `No write can be delivered.`
         );
@@ -219,7 +217,7 @@ function createWriteMachine(wOrig, j) {
               advanceMajorityCommit();
             }
             state.nodes[wt].phase = w === 0 ? 'acked' : 'active';
-            log(`Primary: journal flushed \u2014 v${nextId} crash-safe.`, 'ok');
+            log(`Primary: journal flushed - v${nextId} crash-safe.`, 'ok');
             draw();
           },
         };
@@ -229,7 +227,7 @@ function createWriteMachine(wOrig, j) {
       if (phase === 'fireForget') {
         phase = 'done';
         const secs = eligibleSecs();
-        const t = TEXTS.write.fireForget(opLabel);
+        const t = TEXTS.write.fireForget(opLabel, topoNote);
         const s = {
           title: t.title,
           explain: t.explain,
@@ -244,7 +242,7 @@ function createWriteMachine(wOrig, j) {
               }),
             i * 100));
             startAnimLoop();
-            log(`w:0 \u2014 no ACK. ${opLabel} async replication proceeds.`, 'warn');
+            log(`w:0 - no ACK. ${opLabel} async replication proceeds.`, 'warn');
             state.writeClient.phase = 'idle';
             draw();
           },
@@ -277,7 +275,7 @@ function createWriteMachine(wOrig, j) {
         // 2. Check if write concern is now satisfied \u2192 ACK
         if (!acked && isWcSatisfied()) {
           acked = true;
-          const t = TEXTS.write.ack(opLabel, w, j, nextId, ackNeedsJournal, needCount, isDefault, defaultNote);
+          const t = TEXTS.write.ack(opLabel, w, j, nextId, ackNeedsJournal, needCount, isDefault, defaultNote, topoNote);
           const s = {
             title: t.title,
             explain: t.explain,
@@ -286,7 +284,7 @@ function createWriteMachine(wOrig, j) {
               await awaitParticle(state.nodes[effectiveWriteTarget()], state.writeClient, T.flowAck, 'ACK', () => {
                 state.writeClient.phase = 'received';
               });
-              log(`ACK \u2014 w:${w}${j ? ', j:true' : ''} satisfied. ${opLabel} done.`, 'ok');
+              log(`ACK - w:${w}${j ? ', j:true' : ''} satisfied. ${opLabel} done.`, 'ok');
             },
           };
           history.push(s); return s;
@@ -319,7 +317,7 @@ function createWriteMachine(wOrig, j) {
               if (state.nodes[wt].alive) {
                 await awaitParticle(state.nodes[wt], state.writeClient, T.flowErr, 'ERR', () => {});
               }
-              log(`Write concern error \u2014 w:${w} unachievable. ${opLabel} sits on primary.`, 'err');
+              log(`Write concern error - w:${w} unachievable. ${opLabel} sits on primary.`, 'err');
             },
           };
           history.push(s); return s;
@@ -327,7 +325,7 @@ function createWriteMachine(wOrig, j) {
 
         // 5. All replication done \u2192 clean up
         phase = 'done';
-        const tRepl = TEXTS.write.replComplete(nextId);
+        const tRepl = TEXTS.write.replComplete(nextId, topoNote);
         const s = {
           title: tRepl.title,
           serverSide: true,
@@ -356,7 +354,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       ...TEXTS.read.disconnected,
       run: async () => {
         state.readClient.phase = 'error';
-        log('Read failed \u2014 reader disconnected.', 'err');
+        log('Read failed - reader disconnected.', 'err');
         draw();
       },
     });
@@ -408,7 +406,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     steps.push({
       title: tNo.title,
       explain: tNo.explain,
-      run: async () => { state.readClient.phase = 'error'; log('Read failed \u2014 no eligible node.', 'err'); draw(); },
+      run: async () => { state.readClient.phase = 'error'; log('Read failed - no eligible node.', 'err'); draw(); },
     });
     return steps;
   }
@@ -440,7 +438,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         title: tFroz.title,
         explain: tFroz.explain,
         run: async () => {
-          log(`rc:majority \u2014 majority-commit frozen at v${state.doc.majorityCommitId} (return caps at v${frozenId}).`, 'warn');
+          log(`rc:majority - majority-commit frozen at v${state.doc.majorityCommitId} (return caps at v${frozenId}).`, 'warn');
           draw();
         },
       });
@@ -495,7 +493,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         if (runtimeReachable < 2) {
           state.readClient.phase = 'error';
           state.readClient.errorReason = 'linearizable';
-          log('rc:linearizable blocked \u2014 primary cannot confirm leadership.', 'err'); draw();
+          log('rc:linearizable blocked - primary cannot confirm leadership.', 'err'); draw();
           return;
         }
         await delay(300);
@@ -555,9 +553,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
   return steps;
 }
 
-function readPrefLabel(p) {
-  return { primary:'Primary', primaryPreferred:'Primary (preferred)', secondary:'Secondary', secondaryPreferred:'Secondary (preferred)' }[p] || p;
-}
+function readPrefLabel(p) { return TEXTS.readPrefLabel[p] || p; }
 
 // ═══════════════════════════════════════
 // BUILD ELECTION STEPS
@@ -595,12 +591,12 @@ function buildElectionSteps(opts) {
   if (candidates.length === 0 || totalAlive < majorityNeeded) {
     const reason = candidates.length === 0
       ? (forcePartition ? `No reachable secondary partition forms a majority.` : `No alive secondaries available.`)
-      : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members ${forcePartition ? 'in the partition' : 'alive'} \u2014 need ${majorityNeeded} (majority) to hold an election.`;
+      : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members ${forcePartition ? 'in the partition' : 'alive'} - need ${majorityNeeded} (majority) to hold an election.`;
     const tImp = TEXTS.election.impossible(reason);
     return [{
       title: tImp.title,
       explain: tImp.explain,
-      run: async () => { log(`Election aborted \u2014 ${reason}`, 'err'); draw(); },
+      run: async () => { log(`Election aborted - ${reason}`, 'err'); draw(); },
     }];
   }
 
@@ -615,7 +611,7 @@ function buildElectionSteps(opts) {
     run: async () => {
       winnerNode.phase = 'candidate';
       draw();
-      log(`Election in progress \u2014 ${winnerNode.label} is campaigning (oplog v${winnerNode.memoryVersion || 'none'}).`, 'warn');
+      log(`Election in progress - ${winnerNode.label} is campaigning (oplog v${winnerNode.memoryVersion || 'none'}).`, 'warn');
     },
   });
 
@@ -648,7 +644,7 @@ function buildElectionSteps(opts) {
           state.readClient.sessionSnapshotId > state.doc.majorityCommitId) {
         state.readClient.sessionActive = false;
         state.readClient.sessionSnapshotId = null;
-        log('Snapshot session invalidated \u2014 locked version was rolled back.', 'warn');
+        log('Snapshot session invalidated - locked version was rolled back.', 'warn');
       }
 
       Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });

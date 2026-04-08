@@ -106,7 +106,7 @@ function initButtonTips() {
 // NON-DEFAULT CONFIG BADGE
 // ═══════════════════════════════════════
 function syncWBadge() {
-  const badge = document.getElementById('w-default-badge');
+  const badge = document.getElementById('w-default-pill');
   if (!badge) return;
   const w = document.getElementById('sel-w').value;
   if (w === 'majority') {
@@ -125,7 +125,8 @@ document.getElementById('sel-w').addEventListener('change', syncWBadge);
 // MAIN ACTIONS
 // ═══════════════════════════════════════
 function handleWrite() {
-  if (writeEngine.busy || (writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted)) return;
+  const rA = readEngine.busy || (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted);
+  if (rA || writeEngine.busy || (writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted)) return;
   resetWriteVisual();
   draw();
   const w  = document.getElementById('sel-w').value;
@@ -264,14 +265,11 @@ function resetScenario() {
   state.writeClient.targetNode = null;
   state.readClient.targetNode = null;
   Object.values(state.nodes).forEach(n => { n.alive = true; n.phase = 'idle'; });
-  // Safe to clear aborted now — all engines are fully torn down, no async loop running.
-  writeEngine.aborted = false;
-  readEngine.aborted = false;
-  electionEngine.aborted = false;
   computeLayout(canvasW, canvasH);
   draw();
   syncButtons();
-  log('Scenario reset — all nodes healthy, all links connected, document cleared.', 'info');
+  refreshIdlePanels();
+  log('Scenario reset - all nodes healthy, all links connected, document cleared.', 'info');
 }
 
 // ═══════════════════════════════════════
@@ -481,7 +479,7 @@ canvas.addEventListener('mouseleave', () => {
 // EVENTS
 // ═══════════════════════════════════════
 ['sel-w','sel-j'].forEach(id => {
-  document.getElementById(id)?.addEventListener('change', () => { resetWriteVisual(); draw(); syncTooltips(); });
+  document.getElementById(id)?.addEventListener('change', () => { resetWriteVisual(); draw(); syncTooltips(); refreshIdlePanels(); });
 });
 ['sel-rc','sel-readpref'].forEach(id => {
   document.getElementById(id)?.addEventListener('change', () => {
@@ -495,6 +493,7 @@ canvas.addEventListener('mouseleave', () => {
     draw();
     syncButtons();
     syncTooltips();
+    refreshIdlePanels();
   });
 });
 window.addEventListener('resize', resizeCanvas);
@@ -519,7 +518,7 @@ document.getElementById('btn-canvas-reset-ui')?.addEventListener('click', () => 
   computeLayout(canvasW, canvasH);
   draw();
 });
-document.getElementById('btn-clear-log').addEventListener('click', () => { document.getElementById('log').innerHTML = ''; });
+document.getElementById('btn-clear-log').addEventListener('click', () => { document.getElementById('event-log').innerHTML = ''; });
 document.getElementById('btn-dismiss-mobile').addEventListener('click', dismissMobilePopup);
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleTheme);
 
@@ -555,6 +554,7 @@ function applyScenario(scenario) {
   updateReadActionControls();
   draw();
   syncButtons();
+  refreshIdlePanels();
   log(`\u2500\u2500\u2500 Scenario: ${scenario.name} \u2500\u2500\u2500`, 'info');
   log(scenario.next, 'info');
 }
@@ -582,12 +582,84 @@ function initScenarios() {
     item.innerHTML =
       `<div class="scenario-name">${entry.name}</div>` +
       `<div class="scenario-what">${entry.what}</div>` +
-      `<div class="scenario-next">\u25B6 ${entry.next}</div>` +
+      `<div class="scenario-next">${entry.next}</div>` +
       `<button class="sec scenario-btn">Set up</button>`;
     item.querySelector('.scenario-btn').addEventListener('click', () => applyScenario(entry));
     (grid || container).appendChild(item);
   });
 }
+
+// ═══════════════════════════════════════
+// DEBUG LABEL OVERLAY
+// ═══════════════════════════════════════
+let debugLabelsActive = false;
+
+function toggleDebugLabels() {
+  debugLabelsActive = !debugLabelsActive;
+  document.body.classList.toggle('debug-labels', debugLabelsActive);
+  const btn = document.getElementById('btn-debug');
+  if (btn) btn.textContent = debugLabelsActive ? 'Debug: ON' : 'Debug';
+  if (debugLabelsActive) createDomBadges();
+  else removeDomBadges();
+  draw();
+}
+
+function createDomBadges() {
+  removeDomBadges();
+  let overlay = document.getElementById('dbg-overlay');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'dbg-overlay';
+    document.body.appendChild(overlay);
+  }
+  const ids = [
+    'sel-w', 'sel-j', 'sel-rc', 'sel-readpref',
+    'btn-write-start', 'btn-write-next', 'btn-write-finish',
+    'btn-read-start', 'btn-read-next', 'btn-read-finish',
+    'btn-read-session-start', 'btn-read-session-again', 'btn-read-session-end',
+    'btn-reset', 'btn-theme-toggle', 'btn-clear-log',
+    'btn-canvas-election', 'btn-canvas-force-election', 'btn-canvas-reset-ui',
+    'write-step-panel', 'read-step-panel',
+    'write-status', 'read-status',
+    'scenarios-details', 'event-log', 'canvas',
+    'w-default-pill', 'step-panels-card',
+    'write-step-title', 'write-step-explain', 'write-step-badge',
+    'read-step-title', 'read-step-explain', 'read-step-badge',
+    'write-phase-trail',
+    'topo-bar', 'topo-hint',
+    'session-actions',
+  ];
+
+  function placeBadge(el, label) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0) return;
+    const badge = document.createElement('span');
+    badge.className = 'dbg-badge';
+    badge.textContent = label;
+    badge.style.left = (r.left + window.scrollX) + 'px';
+    badge.style.top  = (r.top  + window.scrollY) + 'px';
+    overlay.appendChild(badge);
+  }
+
+  ids.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) placeBadge(el, id);
+  });
+
+  document.querySelectorAll('.scenario-item').forEach((el, i) => {
+    placeBadge(el, 'scenario[' + i + ']');
+  });
+  document.querySelectorAll('.scenario-btn').forEach((el, i) => {
+    placeBadge(el, 'scenario-btn[' + i + ']');
+  });
+}
+
+function removeDomBadges() {
+  const overlay = document.getElementById('dbg-overlay');
+  if (overlay) overlay.innerHTML = '';
+}
+
+document.getElementById('btn-debug')?.addEventListener('click', toggleDebugLabels);
 
 // ═══════════════════════════════════════
 // INIT
@@ -601,4 +673,5 @@ initButtonTips();
 syncTooltips();
 initPopups();
 initScenarios();
-log('Ready — click nodes/links to set topology, click client arrows to interrupt connections.', 'info');
+refreshIdlePanels();
+log('Ready - click nodes/links to set topology, click client arrows to interrupt connections.', 'info');
