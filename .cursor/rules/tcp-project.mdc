@@ -1,0 +1,53 @@
+---
+description: MongoDB Tuneable Consistency Playground — project conventions, architecture, and invariants
+alwaysApply: true
+---
+
+# TCP Project Conventions
+
+## Architecture
+
+Single-page vanilla JS app (no build step). Open `index.html` and it works.
+
+### File load order (must stay in this sequence)
+`theme.js → state.js → texts.js → simulation.js → engine.js → draw.js → app.js`
+
+### File responsibilities — one concern per file
+| File | Owns |
+|------|------|
+| `state.js` | State object, doc helpers, partition helpers (`getPartition`, `isNodeIsolated`, `effectiveWriteTarget`, `resolveReadTarget`). Shared logic lives here. |
+| `texts.js` | ALL user-facing strings (step titles, explains, tooltips, badge text). Never hardcode UI text elsewhere. |
+| `simulation.js` | Write state machine (`createWriteMachine`), read steps (`buildReadSteps`), election steps (`buildElectionSteps`). |
+| `engine.js` | Step engine runner (`runMachine`), UI button sync (`syncButtons`). |
+| `draw.js` | Canvas rendering, hit testing, layout, animations. |
+| `app.js` | Event handlers, canvas interaction, popups, init. |
+
+## Key Invariants
+
+- **Never store derived state.** `isNodeIsolated()` is computed from topology, not a stored flag. The secondary-to-secondary link visual uses `aKey !== state.primaryKey && bKey !== state.primaryKey`, not a link key check.
+- **`effectiveWriteTarget()`** returns `writeClient.targetNode || state.primaryKey`. All write operations use this, never raw `state.primaryKey`.
+- **`resolveReadTarget()`** returns `readClient.targetNode` if set, else applies readPreference logic.
+- **Link keys are slot-based** (`ps1`, `ps2`, `s1s2`), not role-based. After election, the physical wire stays the same but the roles swap.
+- **Reads don't change node colors.** Only write concern operations mutate node phases.
+- **Primary journal flushes before replication** in all write concern modes (simplification for storytelling clarity).
+
+## Testing
+
+- Run: `node --test test/*.test.js` (or `npm test`)
+- Test harness: `test/helpers.js` — loads JS into Node VM with browser stubs
+- TDD approach: write failing tests first when adding features
+- Every test asserts state transitions or error paths, not just defaults
+
+## Workflow
+
+- After changes: run tests, check lints, update `docs/architecture.md` and `docs/correctness.md`
+- For major changes: create iteration log per `prompts/iteration-log-prompt.md`
+- Update `index.html` footer "Last updated" with date AND time on every iteration
+- Quality gates: `prompts/quality-standards.md` and `prompts/quality-check-prompt.md`
+
+## Common Gotchas
+
+- `resetDoc()` resets election state, labels, and client targeting — check it after adding new state fields
+- Canvas `draw()` calls `syncButtons()` implicitly via engine — don't duplicate
+- The write machine is lazy (evaluates live topology per `nextStep()`) — it adapts to mid-write topology changes automatically
+- `awaitParticle` is instant in tests (`skipAnimations = true`) — don't rely on timing

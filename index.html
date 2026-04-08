@@ -28,7 +28,7 @@
 
 <!-- Topology hint + Reset -->
 <div class="topo-bar">
-  <span class="topo-hint">Click nodes to toggle health · Click links to partition · Click client connection lines to interrupt</span>
+  <span class="topo-hint">Click nodes to toggle health · Click links to partition · Click clients to pick target node · Drag clients to reposition</span>
   <div style="display:flex;gap:5px">
     <button class="sec" id="btn-reset">Reset ↺</button>
     <button class="sec theme-toggle" id="btn-theme-toggle">☀</button>
@@ -147,10 +147,22 @@
     ⚡ Trigger Election
     <span class="raft-hint">ⓘ RAFT consensus — hover for details</span>
   </button>
+  <!-- Force election button — shown when primary is partitioned but alive -->
+  <button id="btn-canvas-force-election" class="canvas-election-btn canvas-force-election-btn">
+    ⚡ Force Election (partition)
+  </button>
+  <button id="btn-canvas-reset-ui" class="canvas-reset-ui-btn" title="Reset client positions">↺</button>
   <canvas id="canvas"
     role="img"
     aria-label="MongoDB 3-node replica set topology showing write client, read client, primary, and two secondaries with replication links">
   </canvas>
+</div>
+
+<div class="card scenarios-panel">
+  <details id="scenarios-details">
+    <summary class="scenarios-summary">💡 Suggested scenarios</summary>
+    <div class="scenarios-list" id="scenarios-list"></div>
+  </details>
 </div>
 
 <div class="card log-card log-panel">
@@ -177,7 +189,7 @@
     <a href="https://www.mongodb.com/docs/manual/reference/read-concern/" target="_blank" rel="noopener">MongoDB Docs: Read Concern</a>
     &nbsp;·&nbsp;
     <a href="https://www.mongodb.com/docs/manual/reference/write-concern/" target="_blank" rel="noopener">MongoDB Docs: Write Concern</a>
-    &nbsp;·&nbsp; Last updated: April 7, 2026 22:00 CEST
+    &nbsp;·&nbsp; Last updated: April 8, 2026 14:30 CET
   </div>
 </footer>
 

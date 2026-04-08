@@ -189,6 +189,9 @@ const TEXTS = {
             : w === 1
             ? `Only the primary has confirmed. v${nextId} is on disk on the primary but <strong>not yet copied to any secondary</strong>. ` +
               `If the primary fails before a secondary gets this data, <strong>the write is permanently lost</strong> even though the client was told it succeeded.` +
+              `<br><em>CAP trade-off: Availability over Consistency (PA). w:1 keeps the primary responsive even under partition \u2014 ` +
+              `it ACKs without waiting for peers. If the primary is actually isolated, these writes will be rolled back after election. ` +
+              `In production, the primary steps down ~10\u202Fs after losing majority heartbeats.</em>` +
               defaultNote
             : `Confirmed by ${needCount} node(s). Remaining secondaries will receive the data in the background.` +
               defaultNote),
@@ -196,11 +199,19 @@ const TEXTS = {
     },
 
     wcUnsatisfied(opLabel, w, needCount, reachCount) {
+      const isMajority = w === 'majority';
       return {
         title: 'Write concern cannot be satisfied',
         explain: `<strong>w:${w}</strong> needs ${needCount} node(s) to confirm, but only ${reachCount} are reachable. ` +
           `MongoDB will wait until enough nodes become available or the <strong>wtimeout</strong> fires. ` +
-          `<strong>The write (${opLabel}) is NOT lost</strong> \u2014 it is already stored on the primary. Click the client link to simulate a timeout, or fix the topology.`,
+          `<strong>The write (${opLabel}) is NOT lost</strong> \u2014 it is already stored on the primary\u2019s journal. ` +
+          (isMajority
+            ? `<br><br><strong>CAP trade-off: Consistency over Availability (CP).</strong> ` +
+              `w:majority refuses to confirm a write that isn\u2019t verified by a majority \u2014 the client is told the write failed, ` +
+              `preventing a split-brain scenario where two partitions accept conflicting writes.`
+            : `However, since w:${w} doesn\u2019t require majority confirmation, the data may be rolled back if an election occurs in another partition.`) +
+          `<br><em>In production the primary would also step down after ~10\u202Fs once heartbeats confirm it has lost majority. ` +
+          `The simulator skips this delay \u2014 the write concern itself already prevents inconsistency.</em>`,
       };
     },
 
@@ -273,14 +284,19 @@ const TEXTS = {
       };
     },
 
-    majorityRead(mcLabel, targetKey, primaryKey) {
+    majorityRead(servedLabel, targetKey, primaryKey, globalMcLabel) {
       const isPrimary = targetKey === primaryKey;
+      const lagNote = globalMcLabel
+        ? `<br><br>The cluster majority-confirmed point is <strong>${globalMcLabel}</strong>, but this node has only replicated up to <strong>${servedLabel}</strong> \u2014 ` +
+          `<strong>rc:majority</strong> caps the result at what this node actually holds.`
+        : '';
       return {
-        title: `Node reads majority-confirmed data \u2192 ${mcLabel}`,
-        explain: `The node returns data that has been confirmed by a majority of nodes: <strong>${mcLabel}</strong>. ` +
+        title: `Node reads majority-confirmed data \u2192 ${servedLabel}`,
+        explain: `The node returns data that has been confirmed by a majority of nodes: <strong>${servedLabel}</strong>. ` +
           (isPrimary
             ? `On the <strong>primary</strong>, this is the most current safe view. No rollback risk.`
-            : `On this <strong>secondary</strong>, the confirmed point may lag slightly behind the primary due to replication delay. The data is <strong>guaranteed safe from rollback</strong>.`),
+            : `On this <strong>secondary</strong>, the confirmed point may lag slightly behind the primary due to replication delay. The data is <strong>guaranteed safe from rollback</strong>.`) +
+          lagNote,
       };
     },
 
@@ -303,6 +319,13 @@ const TEXTS = {
       title: 'Data returned to client',
       explain: `With <strong>rc:linearizable</strong>, the primary returns data reflecting every majority-confirmed write up to this moment \u2014 ` +
         `the strongest read guarantee in MongoDB. Combined with <strong>w:majority</strong> writes, reads and writes behave as if executed by a single thread.`,
+    },
+
+    linearizableBlocked: {
+      title: 'Read blocked \u2014 leadership not confirmed',
+      explain: `The primary could not reach a majority of nodes to confirm it is still the leader. ` +
+        `Rather than risk returning stale data, <strong>rc:linearizable blocks</strong> until <strong>maxTimeMS</strong> expires. ` +
+        `This is the safety trade-off: linearizable reads choose correctness over availability.`,
     },
 
     snapshotRead(snapLabel, isSession, targetKey, primaryKey) {
@@ -431,6 +454,12 @@ const TEXTS = {
         `<div class="cb-detail">The target node is unavailable. Read cannot be served.${sessionSuffix}</div>`;
     },
 
+    readLinearizableBlocked(sessionSuffix) {
+      return `<div class="cb-label">Read blocked</div>` +
+        `<div class="cb-status cb-error">\u26A0 Leadership not confirmed</div>` +
+        `<div class="cb-detail">rc:linearizable requires the primary to prove leadership with a majority. Under partition it can\u2019t \u2014 the read blocks until maxTimeMS expires.${sessionSuffix}</div>`;
+    },
+
     readNone(rcVal, reason, sessionSuffix) {
       return `<div class="cb-label">Read result: none</div>` +
         `<div class="cb-status cb-dim">No data returned</div>` +
@@ -449,4 +478,100 @@ const TEXTS = {
         `<div class="cb-detail">rc:${rcVal} guarantees this data will not be rolled back.${sessionSuffix}</div>`;
     },
   },
+
+  // ─── Canvas hover tooltips (native title attribute) ───────────────
+  canvasTips: {
+    node(label, alive) {
+      return alive
+        ? `${label}\nClick to shut down this node (simulates crash — memory lost, journal preserved).`
+        : `${label} (down)\nClick to restart (recovers from journal).`;
+    },
+    link(labelA, labelB, linked) {
+      return linked
+        ? `${labelA} \u2194 ${labelB}: connected\nClick to partition this link (both nodes stay alive but cannot communicate).`
+        : `${labelA} \u2194 ${labelB}: partitioned\nClick to restore the connection.`;
+    },
+    linkSecSec(labelA, labelB, linked) {
+      return linked
+        ? `${labelA} \u2194 ${labelB}: heartbeat only\nMongoDB supports chained replication (secondaries can sync from other secondaries), but this simulator excludes it for clarity. A secondary is only considered reachable if it has a direct link to the current primary.\nClick to partition.`
+        : `${labelA} \u2194 ${labelB}: partitioned\nClick to restore.`;
+    },
+    clientWrite(targetLabel) {
+      return `Write Client\nClick to cycle target node: ${targetLabel}\nDrag to reposition.`;
+    },
+    clientRead(targetLabel) {
+      return `Read Client\nClick to cycle target node: ${targetLabel}\nDrag to reposition.`;
+    },
+    clientLink(type, linked) {
+      const name = type === 'wp' ? 'Writer \u2192 Node' : 'Reader \u2192 Node';
+      return linked
+        ? `${name}: connected\nClick to disconnect (simulates network interruption).`
+        : `${name}: disconnected\nClick to reconnect.`;
+    },
+    lockBanner: `Topology locked during operation\n\nAllowing topology changes mid-operation would require tracking every possible state combination: primary alive/dead, secondaries in various replication stages, journal states, partition states — and their interactions. This grows exponentially and produces confusing, hard-to-explain results.\n\nInstead, configure your topology first, then run the operation to observe a clean, well-defined outcome. Chain multiple operations to explore failure scenarios step by step.`,
+  },
+
+  // ─── Suggested scenarios ─────────────────────────────────────────────
+  // Grouped: defaults-under-stress first (the heroes), then opt-in risk.
+  scenarios: [
+    { group: 'Defaults under pressure', subtitle: 'w:majority + rc:majority \u2014 see how the defaults protect your data' },
+    {
+      id: 'safe-write',
+      name: 'Safe write \u2192 crash \u2192 recovery',
+      what: 'Write with defaults, crash the primary, trigger an election. The new primary still has your data because a majority confirmed it before the crash.',
+      next: 'Write \u2192 Finish \u2192 kill Primary \u2192 Trigger Election \u2192 read from new primary.',
+      setup: { w: 'majority', j: 'false', rc: 'majority', readPref: 'primary' },
+    },
+    {
+      id: 'partition-safe',
+      name: 'Network partition \u2192 write blocked, data safe',
+      what: 'The primary is cut off from both secondaries. It refuses to confirm the write because it can\u2019t reach a majority \u2014 choosing consistency over availability (CP). No data is lost or inconsistent.',
+      next: 'Partition is pre-set. Write \u2192 Finish (write concern error) \u2192 no split-brain.',
+      setup: { w: 'majority', j: 'false', rc: 'majority', readPref: 'primary', links: { ps1: false, ps2: false } },
+    },
+    {
+      id: 'snapshot-isolation',
+      name: 'Snapshot isolation across writes',
+      what: 'Pin a session to a point in time. No matter what writes happen after, every read in this session returns the exact same data \u2014 no surprises, no phantom changes.',
+      next: 'Start session \u2192 Write \u2192 Finish \u2192 Read again \u2192 same result.',
+      setup: { w: 'majority', j: 'false', rc: 'snapshot', readPref: 'primary' },
+    },
+    {
+      id: 'linearizable',
+      name: 'Strongest read guarantee',
+      what: 'rc:linearizable makes the primary prove it\u2019s still the leader before answering. Under partition it can\u2019t, so the read blocks \u2014 it will never return stale data.',
+      next: 'Partition is pre-set. Issue a linearizable read and observe the block.',
+      setup: { w: 'majority', j: 'false', rc: 'linearizable', readPref: 'primary', links: { ps1: false, ps2: false } },
+    },
+
+    { group: 'Lowering the guardrails', subtitle: 'What happens when you trade safety for speed or availability' },
+    {
+      id: 'w1-data-loss',
+      name: 'w:1 \u2192 data loss after crash',
+      what: 'The client hears "write succeeded," but the data only lives on one node. When that node crashes before replicating, the write is gone forever.',
+      next: 'Write \u2192 Finish \u2192 kill Primary \u2192 Trigger Election \u2192 read from new primary.',
+      setup: { w: '1', j: 'false', rc: 'majority', readPref: 'primary' },
+    },
+    {
+      id: 'dirty-read',
+      name: 'rc:local \u2192 dirty read from secondary',
+      what: 'A secondary returns data that hasn\u2019t been confirmed by a majority. If the primary fails, that data could be rolled back \u2014 but your app already saw it.',
+      next: 'Write w:1 \u2192 Finish \u2192 Read rc:local from secondary.',
+      setup: { w: '1', j: 'false', rc: 'local', readPref: 'secondary' },
+    },
+    {
+      id: 'split-brain',
+      name: 'w:1 \u2192 split-brain under partition',
+      what: 'The old primary is isolated but with w:1 it still accepts writes \u2014 choosing availability over consistency (PA). After election, a new primary emerges and these writes are rolled back.',
+      next: 'Partition is pre-set. Force Election \u2192 write to old primary (change write client target).',
+      setup: { w: '1', j: 'false', rc: 'majority', readPref: 'primary', links: { ps1: false, ps2: false } },
+    },
+    {
+      id: 'fire-forget',
+      name: 'w:0 \u2192 fire-and-forget',
+      what: 'Send the write and move on \u2014 no confirmation, no waiting. You\u2019ll never know if it succeeded. Maximum speed, zero durability guarantees.',
+      next: 'Click write \u2014 no ACK step, client returns to idle instantly.',
+      setup: { w: '0', j: 'false', rc: 'local', readPref: 'primary' },
+    },
+  ],
 };

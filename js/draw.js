@@ -44,19 +44,24 @@ function startAnimLoop() {
 // ═══════════════════════════════════════
 // LAYOUT
 // ═══════════════════════════════════════
+let clientDragged = { write: false, read: false };
+
 function computeLayout(W, H) {
   const cx = W / 2;
-  const topY  = 40;
-  const nodeY = 245;
-  const spread = Math.min(250, W * 0.28);
+  const topY    = 40;
+  const priY    = 185;
+  const secY    = 310;
+  const spread  = Math.min(220, W * 0.26);
 
-  state.writeClient.x = cx - spread; state.writeClient.y = topY;
-  state.readClient.x  = cx + spread; state.readClient.y  = topY;
+  if (!clientDragged.write) { state.writeClient.x = cx - spread; state.writeClient.y = topY; }
+  if (!clientDragged.read)  { state.readClient.x  = cx + spread; state.readClient.y  = topY; }
 
-  state.nodes.primary.x = cx;          state.nodes.primary.y = nodeY;
-  state.nodes.s1.x      = cx - spread; state.nodes.s1.y      = nodeY;
-  state.nodes.s2.x      = cx + spread; state.nodes.s2.y      = nodeY;
+  state.nodes.primary.x = cx;          state.nodes.primary.y = priY;
+  state.nodes.s1.x      = cx - spread; state.nodes.s1.y      = secY;
+  state.nodes.s2.x      = cx + spread; state.nodes.s2.y      = secY;
 }
+
+function resetClientDrag() { clientDragged.write = false; clientDragged.read = false; }
 
 // ═══════════════════════════════════════
 // CANVAS SETUP
@@ -115,21 +120,36 @@ function pointToSegDist(px, py, ax, ay, bx, by) {
 }
 
 function hitTest(mx, my) {
+  // Lock banner (checked first — sits at the bottom of the canvas)
+  if (_lockBannerBounds) {
+    const b = _lockBannerBounds;
+    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h)
+      return { type: 'lockBanner' };
+  }
+  // Client circles (checked first — they sit above everything visually)
+  const wc = state.writeClient, rc = state.readClient;
+  if (Math.hypot(mx - wc.x, my - wc.y) <= CR + 5) return { type: 'client', key: 'write' };
+  if (Math.hypot(mx - rc.x, my - rc.y) <= CR + 5) return { type: 'client', key: 'read' };
+
   for (const [key, node] of Object.entries(state.nodes)) {
     if (Math.hypot(mx - node.x, my - node.y) <= NR + 5) return { type: 'node', key };
   }
-  const pk = state.primaryKey;
-  const p  = state.nodes[pk];
-  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
-  for (const key of secKeys) {
-    const s = state.nodes[key];
-    const dist = pointToSegDist(mx, my, p.x, p.y, s.x, s.y);
-    if (dist < 14 && Math.hypot(mx - p.x, my - p.y) > NR + 8 && Math.hypot(mx - s.x, my - s.y) > NR + 8)
-      return { type: 'link', key };
+  const nodeKeys = Object.keys(state.nodes);
+  for (let i = 0; i < nodeKeys.length; i++) {
+    for (let j = i + 1; j < nodeKeys.length; j++) {
+      const aKey = nodeKeys[i], bKey = nodeKeys[j];
+      const a = state.nodes[aKey], b = state.nodes[bKey];
+      const lk = getLinkBetween(aKey, bKey);
+      if (!lk) continue;
+      const dist = pointToSegDist(mx, my, a.x, a.y, b.x, b.y);
+      if (dist < 14 && Math.hypot(mx - a.x, my - a.y) > NR + 8 && Math.hypot(mx - b.x, my - b.y) > NR + 8)
+        return { type: 'link', key: lk };
+    }
   }
-  const wc = state.writeClient;
-  const wDist = pointToSegDist(mx, my, wc.x, wc.y + CR, p.x, p.y - NR);
-  if (wDist < 14 && Math.hypot(mx - wc.x, my - wc.y) > CR + 5 && Math.hypot(mx - p.x, my - p.y) > NR + 5)
+  const wt = effectiveWriteTarget();
+  const wp = state.nodes[wt];
+  const wDist = pointToSegDist(mx, my, wc.x, wc.y + CR, wp.x, wp.y - NR);
+  if (wDist < 14 && Math.hypot(mx - wc.x, my - wc.y) > CR + 5 && Math.hypot(mx - wp.x, my - wp.y) > NR + 5)
     return { type: 'clientLink', key: 'wp' };
   const tKey = resolveReadTarget(
     document.getElementById('sel-rc')?.value || 'majority',
@@ -137,7 +157,6 @@ function hitTest(mx, my) {
   );
   if (tKey) {
     const t = state.nodes[tKey];
-    const rc = state.readClient;
     const rDist = pointToSegDist(mx, my, rc.x, rc.y + CR, t.x, t.y - NR);
     if (rDist < 14 && Math.hypot(mx - rc.x, my - rc.y) > CR + 5 && Math.hypot(mx - t.x, my - t.y) > NR + 5)
       return { type: 'clientLink', key: 'rp' };
@@ -161,20 +180,53 @@ function draw() {
   drawReplicationLinks();
   drawWriteClientLine();
   drawReadClientLine(selRC, selRP);
-  Object.entries(state.nodes).forEach(([k, n]) =>
-    drawNode(n, k === state.primaryKey ? 'primary' : 'secondary')
-  );
+  // Role is computed dynamically — never stored. isNodeIsolated() does BFS
+  // to check if the node can reach the primary through live links.
+  Object.entries(state.nodes).forEach(([k, n]) => {
+    const role = k === state.primaryKey ? 'primary' : isNodeIsolated(k) ? 'isolated' : 'secondary';
+    drawNode(n, role);
+  });
   drawWriteClient(selW);
   drawReadClient(selRC);
   drawDocLedger();
   drawParticles();
   updateConsistencyViews();
+
+  const resetBtn = document.getElementById('btn-canvas-reset-ui');
+  const hasCustomUI = clientDragged.write || clientDragged.read || state.writeClient.targetNode || state.readClient.targetNode;
+  if (resetBtn) resetBtn.style.display = hasCustomUI ? 'block' : 'none';
+
+  drawLockHint();
+}
+
+let _lockBannerBounds = null; // { x, y, w, h } — updated each draw, used by hitTest
+
+function drawLockHint() {
+  if (!isAnyEngineActive()) { _lockBannerBounds = null; return; }
+  const text = '🔒 Topology locked  ·  finish or reset to reconfigure  ·  use multi-step sequences to explore failure scenarios';
+  ctx.save();
+  ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  const metrics = ctx.measureText(text);
+  const pw = metrics.width + 24, ph = 20;
+  const px = canvasW / 2 - pw / 2, py = canvasH - 8 - ph;
+  _lockBannerBounds = { x: px, y: py, w: pw, h: ph };
+  ctx.globalAlpha = 0.72;
+  ctx.fillStyle = T.amberDarkBg;
+  ctx.beginPath();
+  ctx.roundRect(px, py, pw, ph, 6);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = T.amber;
+  ctx.fillText(text, canvasW / 2, canvasH - 8);
+  ctx.restore();
 }
 
 function drawDocLedger() {
   const { latestId, majorityCommitId } = state.doc;
-  const cx   = (state.writeClient.x + state.readClient.x) / 2;
-  const ledgerY = state.writeClient.y;
+  const cx      = canvasW / 2;
+  const ledgerY = 40;
 
   ctx.save();
   ctx.textAlign = 'center';
@@ -220,11 +272,13 @@ function drawDocLedger() {
 
 function drawRSBox() {
   const pad = 38;
-  const xs  = [state.nodes.s1.x, state.nodes.primary.x, state.nodes.s2.x];
+  const allNodes = Object.values(state.nodes);
+  const xs = allNodes.map(n => n.x);
+  const ys = allNodes.map(n => n.y);
   const bx  = Math.min(...xs) - NR - pad;
   const bw  = Math.max(...xs) + NR + pad - bx;
-  const by  = state.nodes.primary.y - NR - 24;
-  const bh  = NR * 2 + 80;
+  const by  = Math.min(...ys) - NR - 24;
+  const bh  = Math.max(...ys) + NR + 72 - by;
   ctx.save();
   ctx.strokeStyle = T.rsBoxBorder; ctx.lineWidth = 1.8; ctx.setLineDash([6,4]);
   ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.stroke();
@@ -238,22 +292,33 @@ function drawRSBox() {
 }
 
 function drawReplicationLinks() {
-  const pk = state.primaryKey;
-  const p  = state.nodes[pk];
-  const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
-  secKeys.forEach(k => {
-    const s = state.nodes[k];
-    const lk = getLinkBetween(pk, k);
-    const linked = lk ? state.links[lk] : true;
-    const broken = !linked || !s.alive;
-    const hovered = hoverTarget && hoverTarget.type === 'link' && hoverTarget.key === k;
+  const nodeKeys = Object.keys(state.nodes);
+  const pairs = [];
+  for (let i = 0; i < nodeKeys.length; i++) {
+    for (let j = i + 1; j < nodeKeys.length; j++) {
+      pairs.push([nodeKeys[i], nodeKeys[j]]);
+    }
+  }
+
+  pairs.forEach(([aKey, bKey]) => {
+    const a = state.nodes[aKey];
+    const b = state.nodes[bKey];
+    const lk = getLinkBetween(aKey, bKey);
+    if (!lk) return;
+    const linked = state.links[lk];
+    const broken = !linked || !a.alive || !b.alive;
+    const hoverLinkKey = lk;
+    const hovered = hoverTarget && hoverTarget.type === 'link' && hoverTarget.key === hoverLinkKey;
+    // Role-based, not link-key-based — correct after election when roles swap
+    const isSecSec = aKey !== state.primaryKey && bKey !== state.primaryKey;
     ctx.save();
-    ctx.strokeStyle = hovered ? T.linkHover : broken ? T.linkBroken : T.linkDefault;
-    ctx.lineWidth = hovered ? 3 : 2; ctx.setLineDash([5,4]);
-    ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(s.x, s.y); ctx.stroke();
+    ctx.strokeStyle = hovered ? T.linkHover : broken ? T.linkBroken : isSecSec ? T.linkSecSec : T.linkDefault;
+    ctx.lineWidth = hovered ? 3 : isSecSec ? 1.2 : 2;
+    ctx.setLineDash(isSecSec ? [2, 4] : [5, 4]);
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     ctx.setLineDash([]);
-    const mx = (p.x + s.x) / 2, my = (p.y + s.y) / 2;
-    if (!s.alive) {
+    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
+    if (!a.alive || !b.alive) {
       ctx.beginPath(); ctx.arc(mx, my, 10, 0, Math.PI * 2);
       ctx.fillStyle = T.redDarkBg; ctx.fill();
       ctx.strokeStyle = T.red; ctx.lineWidth = 1.5; ctx.stroke();
@@ -271,13 +336,17 @@ function drawReplicationLinks() {
       ctx.strokeStyle = T.linkHoverMid; ctx.lineWidth = 1; ctx.stroke();
       ctx.fillStyle = T.blue; ctx.font = '9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
       ctx.fillText('\u2702', mx, my); ctx.textBaseline = 'alphabetic';
+      if (isSecSec) {
+        ctx.font = '9px system-ui'; ctx.fillStyle = T.textSecondary; ctx.textBaseline = 'top';
+        ctx.fillText('Heartbeat only \u2014 no replication', mx, my + 14);
+      }
     }
     ctx.restore();
   });
 }
 
 function drawWriteClientLine() {
-  const p = state.nodes[state.primaryKey];
+  const p = state.nodes[effectiveWriteTarget()];
   const wc = state.writeClient;
   const linked = state.links.wp;
   const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === 'wp';
@@ -347,7 +416,8 @@ function drawNode(node, role) {
     ctx.lineWidth = 3; ctx.stroke();
   }
   if (!node.alive) ctx.globalAlpha = 0.22;
-  const defStroke = role === 'primary' ? T.nodeStrokePri : T.nodeStrokeSec;
+  const isIsolated = role === 'isolated';
+  const defStroke = isIsolated ? T.amber : role === 'primary' ? T.nodeStrokePri : T.nodeStrokeSec;
   const stroke    = phaseStroke(node.phase) || defStroke;
   ctx.beginPath(); ctx.arc(node.x, node.y, NR, 0, Math.PI * 2);
   ctx.fillStyle = phaseFill(node.phase); ctx.fill();
@@ -362,6 +432,7 @@ function drawNode(node, role) {
     node.phase === 'error'     ? T.red :
     node.phase === 'candidate'  ? T.purple :
     node.phase === 'recovering' ? T.flowRepl :
+    isIsolated                  ? T.amber :
     role === 'primary'          ? T.leafPriIdle : T.leafSecIdle;
   drawIcon(ICON_LEAF, node.x, node.y - 10, 30, leafColor, 24);
 
@@ -375,9 +446,15 @@ function drawNode(node, role) {
     ctx.strokeStyle = T.flowRepl; ctx.lineWidth = 2; ctx.setLineDash([5, 3]);
     ctx.stroke(); ctx.setLineDash([]);
   }
+  if (isIsolated) {
+    ctx.beginPath(); ctx.arc(node.x, node.y, NR + 7, 0, Math.PI * 2);
+    ctx.strokeStyle = T.amber; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
 
   ctx.fillStyle = T.nodeText; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center';
-  ctx.fillText(node.label, node.x, node.y + 22);
+  const displayLabel = isIsolated ? `${node.label} (isolated)` : node.label;
+  ctx.fillText(displayLabel, node.x, node.y + 22);
   drawNodeDocBadge(node);
   ctx.restore();
 
@@ -445,9 +522,15 @@ function drawWriteClient(wVal) {
   ctx.fillText('Write', c.x, c.y - 4); ctx.fillText('Client', c.x, c.y + 11);
   ctx.fillStyle = T.amber; ctx.font = '9px system-ui';
   ctx.fillText('w:' + wVal, c.x, c.y + CR + 14);
+  let wYOff = CR + 27;
+  if (c.targetNode) {
+    ctx.fillStyle = T.purple; ctx.font = '9px system-ui';
+    ctx.fillText('\u2192 ' + state.nodes[c.targetNode].label, c.x, c.y + wYOff);
+    wYOff += 13;
+  }
   if (state.writeClient.lastWrittenVersion > 0) {
     ctx.fillStyle = T.textSecondary; ctx.font = '9px system-ui';
-    ctx.fillText(`wrote v${c.lastWrittenVersion}`, c.x, c.y + CR + 27);
+    ctx.fillText(`wrote v${c.lastWrittenVersion}`, c.x, c.y + wYOff);
   }
   ctx.restore();
 }
@@ -471,6 +554,11 @@ function drawReadClient(rcVal) {
   ctx.fillStyle = T.blue; ctx.font = '9px system-ui';
   ctx.fillText('rc:' + rcVal, c.x, c.y + CR + 14);
   let yOff = CR + 27;
+  if (c.targetNode) {
+    ctx.fillStyle = T.purple; ctx.font = '9px system-ui';
+    ctx.fillText('\u2192 ' + state.nodes[c.targetNode].label, c.x, c.y + yOff);
+    yOff += 13;
+  }
   if (sessionActive) {
     const snapLabel = c.sessionSnapshotId > 0 ? `v${c.sessionSnapshotId}` : 'none';
     ctx.fillStyle = T.amber; ctx.font = '9px system-ui';
@@ -626,7 +714,9 @@ function updateConsistencyViews() {
   } else if (rc.phase === 'waiting') {
     rBox.innerHTML = TEXTS.consistency.reading(rcVal, sessionSuffix);
   } else if (rc.phase === 'error') {
-    rBox.innerHTML = TEXTS.consistency.readFailed(sessionSuffix);
+    rBox.innerHTML = rc.errorReason === 'linearizable'
+      ? TEXTS.consistency.readLinearizableBlocked(sessionSuffix)
+      : TEXTS.consistency.readFailed(sessionSuffix);
   } else if (rc.lastReceivedVersion !== null) {
     const v = rc.lastReceivedVersion;
     const vStr = v.id > 0 ? `v${v.id}` : 'none';

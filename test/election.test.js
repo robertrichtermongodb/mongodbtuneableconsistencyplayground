@@ -134,6 +134,64 @@ describe('election — rollback of uncommitted writes', () => {
   });
 });
 
+// ─── split-brain election (primary partitioned, not dead) ───────────────────
+
+describe('split-brain election — primary partitioned', () => {
+  function partitionPrimary() {
+    s().links.ps1 = false;
+    s().links.ps2 = false;
+    // s1s2 stays up — secondaries can communicate
+  }
+
+  it('succeeds when primary is alive but partitioned from both secondaries', async () => {
+    partitionPrimary();
+    const steps = ctx.buildElectionSteps({ forcePartition: true });
+    const titles = await runSteps(steps);
+
+    assert.equal(titles.length, 2, 'should have campaign + elected steps');
+    assert.ok(titles[0].includes('campaigns'), `step 0: ${titles[0]}`);
+    assert.ok(titles[1].includes('elected'), `step 1: ${titles[1]}`);
+    assert.notEqual(s().primaryKey, 'primary', 'new primary should be a secondary');
+  });
+
+  it('fails when primary is partitioned AND s1s2 is also down', async () => {
+    partitionPrimary();
+    s().links.s1s2 = false;
+    const steps = ctx.buildElectionSteps({ forcePartition: true });
+    const titles = await runSteps(steps);
+
+    assert.equal(titles.length, 1, 'should be a single impossible step');
+    assert.ok(titles[0].includes('impossible') || titles[0].includes('no majority'),
+      `should fail: ${titles[0]}`);
+  });
+
+  it('picks highest memoryVersion among secondaries', async () => {
+    s().nodes.s1.memoryVersion = 2;
+    s().nodes.s2.memoryVersion = 5;
+    partitionPrimary();
+
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+    assert.equal(s().primaryKey, 's2', 's2 has higher memoryVersion');
+  });
+
+  it('old primary becomes a Secondary after force election', async () => {
+    partitionPrimary();
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+
+    assert.ok(s().nodes.primary.label.startsWith('Secondary'),
+      `old primary should become a secondary, got: ${s().nodes.primary.label}`);
+    assert.notEqual(s().primaryKey, 'primary');
+  });
+
+  it('old primary is isolated after force election (partition still active)', async () => {
+    partitionPrimary();
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+
+    assert.equal(ctx.isNodeIsolated('primary'), true,
+      'old primary should be detected as isolated');
+  });
+});
+
 // ─── election invalidates snapshot session ──────────────────────────────────
 
 describe('election — snapshot session invalidation', () => {

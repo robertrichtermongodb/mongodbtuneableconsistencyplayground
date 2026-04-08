@@ -19,14 +19,14 @@ const state = {
     s1:      { label: 'Secondary 1', x: 0, y: 0, alive: true, phase: 'idle', memoryVersion: 0, journalVersion: 0 },
     s2:      { label: 'Secondary 2', x: 0, y: 0, alive: true, phase: 'idle', memoryVersion: 0, journalVersion: 0 },
   },
-  primaryKey: 'primary', // which node key is currently acting as primary
-  writeClient: { x: 0, y: 0, phase: 'idle', lastWrittenVersion: 0 },
+  primaryKey: 'primary',
+  writeClient: { x: 0, y: 0, phase: 'idle', lastWrittenVersion: 0, targetNode: null },
   readClient:  {
     x: 0, y: 0, phase: 'idle', lastReceivedVersion: null,
-    sessionActive: false, sessionSnapshotId: null,
+    sessionActive: false, sessionSnapshotId: null, targetNode: null,
   },
   particles: [],
-  links: { ps1: true, ps2: true, wp: true, rp: true },
+  links: { ps1: true, ps2: true, s1s2: true, wp: true, rp: true },
   doc: {
     versions: [],        // [{ id, op:'insert'|'update', ackedBy: Set<nodeKey> }]
     latestId: 0,         // id of most recently issued write (0 = nothing written yet)
@@ -43,9 +43,11 @@ function resetDoc() {
   state.doc.majorityCommitId = 0;
   Object.values(state.nodes).forEach(n => { n.memoryVersion = 0; n.journalVersion = 0; });
   state.writeClient.lastWrittenVersion = 0;
+  state.writeClient.targetNode = null;
   state.readClient.lastReceivedVersion = null;
   state.readClient.sessionActive = false;
   state.readClient.sessionSnapshotId = null;
+  state.readClient.targetNode = null;
   // Reset election state
   state.primaryKey = 'primary';
   state.nodes.primary.label = 'Primary';
@@ -53,7 +55,7 @@ function resetDoc() {
   state.nodes.s2.label = 'Secondary 2';
 }
 
-function resetLinks() { state.links.ps1 = true; state.links.ps2 = true; state.links.wp = true; state.links.rp = true; }
+function resetLinks() { state.links.ps1 = true; state.links.ps2 = true; state.links.s1s2 = true; state.links.wp = true; state.links.rp = true; }
 
 // Returns the link key for the structural connection between two node keys.
 // Links are named for the original topology: ps1 = 'primary'↔'s1', ps2 = 'primary'↔'s2'.
@@ -61,14 +63,68 @@ function resetLinks() { state.links.ps1 = true; state.links.ps2 = true; state.li
 function getLinkBetween(a, b) {
   if ((a === 'primary' && b === 's1') || (a === 's1' && b === 'primary')) return 'ps1';
   if ((a === 'primary' && b === 's2') || (a === 's2' && b === 'primary')) return 'ps2';
-  return null; // s1↔s2 has no toggleable link — always connected after election
+  if ((a === 's1' && b === 's2') || (a === 's2' && b === 's1')) return 's1s2';
+  return null;
 }
 
+// Canonical write target — ALL write operations must use this, never raw state.primaryKey.
+// Manual targeting (click client circle) overrides automatic primary routing.
+function effectiveWriteTarget() {
+  return state.writeClient.targetNode || state.primaryKey;
+}
+
+// Reachability is relative to the write target, not the primary — matters when
+// client is manually targeted to a different node.
 function isReachableForWrite(key) {
-  const pk = state.primaryKey;
-  if (key === pk) return state.nodes[key].alive;
-  const lk = getLinkBetween(pk, key);
+  const wt = effectiveWriteTarget();
+  if (key === wt) return state.nodes[key].alive;
+  const lk = getLinkBetween(wt, key);
   return state.nodes[key].alive && (lk ? state.links[lk] : true);
+}
+
+// BFS from nodeKey over alive nodes connected by up links.
+function getPartition(nodeKey) {
+  const visited = new Set();
+  if (!state.nodes[nodeKey].alive) return visited;
+  visited.add(nodeKey);
+  const queue = [nodeKey];
+  while (queue.length > 0) {
+    const current = queue.shift();
+    for (const other of Object.keys(state.nodes)) {
+      if (visited.has(other) || !state.nodes[other].alive) continue;
+      const lk = getLinkBetween(current, other);
+      if (lk && state.links[lk]) {
+        visited.add(other);
+        queue.push(other);
+      }
+    }
+  }
+  return visited;
+}
+
+function isPrimaryPartitioned() {
+  const pk = state.primaryKey;
+  if (!state.nodes[pk].alive) return false;
+  const partition = getPartition(pk);
+  const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
+  return partition.size < majorityNeeded;
+}
+
+// Computed, not stored — isolation is dynamic based on current topology.
+// Used by draw.js to show amber ring + "(isolated)" label.
+//
+// We use a direct-link check, NOT transitive BFS, because the simulator
+// excludes chained replication. A secondary with only the s1↔s2 heartbeat
+// path to the primary cannot receive writes or send ack reports — it is
+// effectively isolated for replication purposes.
+// Note: isPrimaryPartitioned() still uses full BFS because election quorum
+// counts heartbeat connectivity (secondaries can vote via the s1↔s2 link).
+function isNodeIsolated(nodeKey) {
+  if (nodeKey === state.primaryKey) return false;
+  const node = state.nodes[nodeKey];
+  if (!node.alive) return false;
+  const lk = getLinkBetween(nodeKey, state.primaryKey);
+  return !lk || !state.links[lk];
 }
 
 function getServedVersion(nodeKey, rc) {
@@ -138,6 +194,9 @@ function advanceMajorityCommit() {
 // Resolves which node should serve a read given rc and readPreference.
 // Lives here (not simulation.js) because both draw.js and simulation.js need it.
 function resolveReadTarget(rc, readPref) {
+  // Manual override — user pinned the reader to a specific node
+  if (state.readClient.targetNode) return state.readClient.targetNode;
+
   const pk = state.primaryKey;
   const secKeys = Object.keys(state.nodes).filter(k => k !== pk);
   if (rc === 'linearizable') return pk;

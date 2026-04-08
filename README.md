@@ -13,16 +13,19 @@ css/style.css     — all CSS (variables driven by theme)
 js/
   theme.js        — dark/light design tokens, CSS variable injection
   state.js        — shared state, doc helpers, read target resolution
+  texts.js        — all user-facing strings (step titles, tooltips, explanations)
   simulation.js   — write machine, read steps, election steps
   engine.js       — step engines, button sync, panel display
   draw.js         — canvas rendering, hit testing, layout, consistency overlays
   app.js          — custom tooltips, config badge, event handlers, popup logic, init
 test/
   helpers.js      — VM-based test harness with browser stubs
-  *.test.js       — 85 tests across state, writes, reads, elections
+  *.test.js       — 122 tests across state, writes, reads, elections
 ```
 
-The simulator models a 3-node Primary-Secondary-Secondary replica set. Each node tracks `memoryVersion` (volatile) and `journalVersion` (crash-safe). Writes flow through a lazy state machine that evaluates live topology on each step, dynamically retargeting when nodes crash or links partition mid-operation. Primary bounce and data-loss scenarios are detected and surfaced with pedagogical safety notes referencing MongoDB's safe default (`w:majority`).
+The simulator models a 3-node Primary-Secondary-Secondary replica set in a triangle topology. Each node tracks `memoryVersion` (volatile) and `journalVersion` (crash-safe). Writes flow through a lazy state machine that evaluates live topology on each step, dynamically retargeting when nodes crash or links partition mid-operation.
+
+Key features: split-brain simulation via network partitioning and forced elections, client-to-node targeting (click clients to pick which node they talk to), draggable client circles, primary bounce and data-loss detection, and pedagogical safety notes referencing MongoDB's safe default (`w:majority`).
 
 Dark/light theming via CSS custom properties. No build step. Scripts load via `<script>` tags in dependency order. Deployable as static files.
 
@@ -38,9 +41,12 @@ Uses Node.js built-in `node:test` runner (Node 18+). Zero external dependencies.
 
 When using an AI coding assistant on this project:
 
-1. **Follow** the quality standards in [`prompts/quality-standards.md`](prompts/quality-standards.md) — modular structure, green tests, non-vanity test coverage.
-2. **Create** an iteration log for every major change per [`prompts/iteration-log-prompt.md`](prompts/iteration-log-prompt.md). See [`logs/iterations/`](logs/iterations/) for existing logs and the template.
-3. **Verify** the project state after changes using [`prompts/quality-check-prompt.md`](prompts/quality-check-prompt.md).
+1. **Read** the [contributor guide](prompts/contributor-guide.md) for a quick project overview and conventions.
+2. **Follow** the quality standards in [`prompts/quality-standards.md`](prompts/quality-standards.md) — modular structure, green tests, non-vanity test coverage.
+3. **Create** an iteration log for every major change per [`prompts/iteration-log-prompt.md`](prompts/iteration-log-prompt.md). See [`logs/iterations/`](logs/iterations/) for existing logs and the template.
+4. **Verify** the project state after changes using [`prompts/quality-check-prompt.md`](prompts/quality-check-prompt.md).
+
+For smaller/cheaper AI models, see [`prompts/small-model-usage.md`](prompts/small-model-usage.md) for prompt templates and guidance. The [`.cursor/rules/tcp-project.mdc`](.cursor/rules/tcp-project.mdc) rule provides persistent context for Cursor sessions.
 
 ## Documentation
 

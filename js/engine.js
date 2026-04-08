@@ -16,7 +16,10 @@ function abortEngine(eng) {
 function resetEngine(eng) {
   eng.aborted = true;
   if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
-  eng.done = false; eng.idx = -1; eng.aborted = false;
+  // Do NOT reset eng.aborted here — the running async loop must still see it as true
+  // when it resumes from the resolved promise. runMachine() resets it to false on
+  // the next fresh start.
+  eng.done = false; eng.idx = -1;
   eng.busy = false; eng.steps = []; eng._machine = null;
   if (eng._autoFinishId) { clearInterval(eng._autoFinishId); eng._autoFinishId = null; }
 }
@@ -93,11 +96,24 @@ function syncButtons() {
     const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
     const canElect      = aliveCount >= majorityNeeded;
     const hasCandidates = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
-    const show = primaryDown && hasCandidates && canElect && !electionActive && !writeActive && !readActive;
+    const show = primaryDown && hasCandidates && canElect && !electionActive && !writeActive;
     canvasBtnEl.style.display = show ? 'block' : 'none';
     if (show) {
       canvasBtnEl.style.left = (14 + pNode.x) + 'px';
       canvasBtnEl.style.top  = (14 + pNode.y + 52 + 18) + 'px'; // NR=52, 18px gap
+    }
+  }
+
+  // ── Force election button — shown when primary is partitioned but alive ──
+  const forceBtnEl = document.getElementById('btn-canvas-force-election');
+  if (forceBtnEl) {
+    const partitioned = isPrimaryPartitioned();
+    const showForce = partitioned && !electionActive && !writeActive;
+    forceBtnEl.style.display = showForce ? 'block' : 'none';
+    if (showForce) {
+      const s1 = state.nodes.s1, s2 = state.nodes.s2;
+      forceBtnEl.style.left = ((s1.x + s2.x) / 2 - 50) + 'px';
+      forceBtnEl.style.top  = ((s1.y + s2.y) / 2 + 20) + 'px';
     }
   }
 }

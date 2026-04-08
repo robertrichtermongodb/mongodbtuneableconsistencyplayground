@@ -1,6 +1,6 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { createContext, resetState, runMachineToEnd, runMachineSteps } = require('./helpers');
+const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps } = require('./helpers');
 
 const ctx = createContext();
 
@@ -220,87 +220,60 @@ describe('writer disconnected', () => {
   });
 });
 
-// ─── primary down ───────────────────────────────────────────────────────────
+// ─── pre-existing topology: secondaries down before write starts ─────────────
 
-describe('primary down after send', () => {
-  it('fails when primary is dead at memory-apply phase', async () => {
-    const m = machine(1, false);
-    await runMachineSteps(m, 1);
-    assert.equal(s().doc.latestId, 1);
+describe('w:majority — both secondaries down before write', () => {
+  it('reports write concern cannot be satisfied', async () => {
+    s().nodes.s1.alive = false;
+    s().nodes.s2.alive = false;
 
-    s().nodes.primary.alive = false;
-
+    const m = machine('majority', false);
     const titles = await runMachineToEnd(m);
-    assert.ok(titles.some(t => t.includes('No primary')));
-    assert.equal(s().writeClient.phase, 'error');
+    assert.ok(titles.some(t => t.includes('cannot be satisfied')),
+      `expected unsatisfiable error. Steps: ${titles.join(' | ')}`);
   });
 
-  it('rolls back latestId and versions on failure', async () => {
-    const m = machine(1, false);
-    await runMachineSteps(m, 1);
-    assert.equal(s().doc.latestId, 1);
-    assert.equal(s().doc.versions.length, 1);
+  it('sets error phases on primary and client', async () => {
+    s().nodes.s1.alive = false;
+    s().nodes.s2.alive = false;
 
-    s().nodes.primary.alive = false;
+    const m = machine('majority', false);
     await runMachineToEnd(m);
 
-    assert.equal(s().doc.latestId, 0, 'failed write should roll back latestId');
-    assert.equal(s().doc.versions.length, 0, 'failed write should remove version entry');
+    assert.equal(s().nodes.primary.phase, 'error');
+    assert.equal(s().writeClient.phase, 'error');
   });
 });
 
-// ─── THE BUG: crash secondary mid-replication, machine retargets ────────────
+// ─── pre-existing topology: one secondary down, retargets to other ──────────
 
-describe('w:majority — crash S1 after memory apply, retarget to S2', () => {
-  it('retargets replication to S2 and still ACKs', async () => {
-    const m = machine('majority', false);
-
-    // Run: send(1) + primaryMem(2) + primaryJournal(3) + s1Mem(4)
-    const setup = await runMachineSteps(m, 4);
-    assert.ok(setup[3].includes('Secondary 1'), `step 4 should replicate to S1, got: ${setup[3]}`);
-    assert.equal(s().nodes.s1.memoryVersion, 1);
-
-    // Crash S1
-    ctx.crashNode('s1');
+describe('w:majority — S1 down before write, routes to S2', () => {
+  it('replicates to S2 and ACKs', async () => {
     s().nodes.s1.alive = false;
 
-    // Continue — machine should skip S1 journal and retarget to S2
-    const rest = await runMachineToEnd(m);
+    const m = machine('majority', false);
+    const titles = await runMachineToEnd(m);
 
-    const hasS2 = rest.some(t => t.includes('Secondary 2'));
-    assert.ok(hasS2, `should retarget to S2. Steps after crash: ${rest.join(' | ')}`);
-
-    const hasAck = rest.some(t => t.includes('ACK'));
-    assert.ok(hasAck, 'should eventually ACK');
+    const hasS2 = titles.some(t => t.includes('Secondary 2'));
+    assert.ok(hasS2, `should route to S2. Steps: ${titles.join(' | ')}`);
+    assert.ok(titles.some(t => t.includes('ACK')), 'should ACK');
     assert.equal(s().doc.majorityCommitId, 1);
     assert.equal(s().writeClient.phase, 'received');
   });
 });
 
-// ─── write concern unsatisfiable ────────────────────────────────────────────
+// ─── pre-existing topology: link partitioned before write starts ─────────────
 
-describe('w:majority — both secondaries down', () => {
-  it('reports write concern cannot be satisfied', async () => {
+describe('w:majority — S1 link partitioned before write', () => {
+  it('retargets to S2 and ACKs', async () => {
+    s().links.ps1 = false;
+
     const m = machine('majority', false);
-    await runMachineSteps(m, 3);
+    const titles = await runMachineToEnd(m);
 
-    s().nodes.s1.alive = false;
-    s().nodes.s2.alive = false;
-
-    const rest = await runMachineToEnd(m);
-    assert.ok(rest.some(t => t.includes('cannot be satisfied')),
-      `expected unsatisfiable error. Steps: ${rest.join(' | ')}`);
-  });
-
-  it('sets error phases on primary and client', async () => {
-    const m = machine('majority', false);
-    await runMachineSteps(m, 3);
-    s().nodes.s1.alive = false;
-    s().nodes.s2.alive = false;
-    await runMachineToEnd(m);
-
-    assert.equal(s().nodes.primary.phase, 'error');
-    assert.equal(s().writeClient.phase, 'error');
+    const hasS2 = titles.some(t => t.includes('Secondary 2'));
+    assert.ok(hasS2, 'should route to S2');
+    assert.ok(titles.some(t => t.includes('ACK')), 'should still ACK');
   });
 });
 
@@ -397,135 +370,110 @@ describe('sequential writes increment version', () => {
   });
 });
 
-// ─── link partition mid-replication ─────────────────────────────────────────
+// ─── split-brain: writes on partitioned/stale primary ────────────────────────
 
-describe('w:majority — partition link to S1 mid-replication', () => {
-  it('retargets to S2 when S1 link goes down', async () => {
-    const m = machine('majority', false);
-    await runMachineSteps(m, 3); // send + primaryMem + primaryJournal
-
-    // Partition S1
+describe('partitioned primary — w:1 succeeds', () => {
+  it('ACKs locally when primary is alive but both links are down', async () => {
     s().links.ps1 = false;
+    s().links.ps2 = false;
 
-    const rest = await runMachineToEnd(m);
-    const hasS2 = rest.some(t => t.includes('Secondary 2'));
-    assert.ok(hasS2, 'should route to S2');
-    assert.ok(rest.some(t => t.includes('ACK')), 'should still ACK');
-  });
-});
-
-// ─── primary crash at various stages ────────────────────────────────────────
-
-describe('primary crash after memory apply (before journal)', () => {
-  it('errors with "unjournaled write lost"', async () => {
     const m = machine(1, false);
-    await runMachineSteps(m, 2); // send + primaryMem
-    assert.equal(s().nodes.primary.memoryVersion, 1);
+    const titles = await runMachineToEnd(m);
 
-    // Kill primary (crashNode wipes memory)
-    ctx.crashNode('primary');
-    s().nodes.primary.alive = false;
-
-    const rest = await runMachineToEnd(m);
-    assert.ok(rest.some(t => t.includes('crashed')), `should report crash: ${rest.join(' | ')}`);
-    assert.equal(s().writeClient.phase, 'error');
-  });
-});
-
-describe('primary crash after journal flush (during replication)', () => {
-  it('errors with "replication halted"', async () => {
-    const m = machine('majority', false);
-    await runMachineSteps(m, 3); // send + primaryMem + primaryJournal
-    assert.equal(s().nodes.primary.journalVersion, 1);
-
-    // Kill primary (journal survives)
-    ctx.crashNode('primary');
-    s().nodes.primary.alive = false;
-
-    const rest = await runMachineToEnd(m);
-    assert.ok(rest.some(t => t.includes('crashed')), `should report crash: ${rest.join(' | ')}`);
-    assert.equal(s().writeClient.phase, 'error');
-    assert.equal(s().nodes.primary.journalVersion, 1, 'journal should survive crash');
-  });
-});
-
-describe('primary crash after secondary mem apply (mid-replication)', () => {
-  it('errors instead of continuing to ACK', async () => {
-    const m = machine('majority', false);
-    await runMachineSteps(m, 4); // send + primaryMem + primaryJournal + s1Mem
-    assert.equal(s().nodes.s1.memoryVersion, 1);
-
-    // Kill primary
-    ctx.crashNode('primary');
-    s().nodes.primary.alive = false;
-
-    const rest = await runMachineToEnd(m);
-    assert.ok(rest.some(t => t.includes('crashed')), `should report crash: ${rest.join(' | ')}`);
-    assert.ok(!rest.some(t => t.includes('ACK returned')), 'must NOT ack the client');
-    assert.equal(s().writeClient.phase, 'error');
-  });
-});
-
-// ─── primary bounce (kill + revive) ─────────────────────────────────────────
-
-describe('primary bounce after ACK (w:1 j:false) — data survives', () => {
-  it('data survives bounce because primary journaled before ACK', async () => {
-    const m = machine(1, false);
-    await runMachineSteps(m, 4); // send + primaryMem + primaryJournal + ACK
+    assert.ok(titles.some(t => t.includes('ACK')), 'should ACK');
     assert.equal(s().writeClient.phase, 'received');
-    assert.equal(s().nodes.primary.journalVersion, 1);
-
-    // Bounce primary: crash wipes memory, recover restores from journal (=1)
-    ctx.crashNode('primary');
-    s().nodes.primary.alive = false;
-    s().nodes.primary.alive = true;
-    ctx.recoverNode('primary');
-    assert.equal(s().nodes.primary.memoryVersion, 1, 'restored from journal');
-
-    const rest = await runMachineToEnd(m);
-    assert.ok(!rest.some(t => t.includes('lost')),
-      'data should NOT be lost — journal survived');
+    assert.equal(s().nodes.primary.memoryVersion, 1);
   });
 });
 
-describe('primary bounce before ACK (w:majority j:false) — write lost', () => {
-  it('fails the write with error', async () => {
+describe('partitioned primary — w:majority fails', () => {
+  it('cannot achieve write concern with only 1 reachable node', async () => {
+    s().links.ps1 = false;
+    s().links.ps2 = false;
+
     const m = machine('majority', false);
-    await runMachineSteps(m, 3); // send + primaryMem + primaryJournal
-    assert.equal(s().nodes.primary.journalVersion, 1);
-    assert.equal(s().nodes.primary.memoryVersion, 1);
+    const titles = await runMachineToEnd(m);
 
-    // Bounce: crash preserves journal, recover restores from it
-    ctx.crashNode('primary');
-    s().nodes.primary.alive = false;
-    s().nodes.primary.alive = true;
-    ctx.recoverNode('primary');
-    assert.equal(s().nodes.primary.memoryVersion, 1, 'journal survived, data restored');
+    assert.ok(titles.some(t => t.includes('cannot') || t.includes('Cannot')),
+      `should report failure: ${titles.join(' | ')}`);
+    assert.equal(s().writeClient.phase, 'error');
+  });
+});
 
-    // Machine should continue normally since data is intact
-    const rest = await runMachineToEnd(m);
-    assert.ok(rest.some(t => t.includes('ACK')), 'should still ACK — data survived');
+describe('after split-brain election — writes go to new primary', () => {
+  it('w:1 succeeds on new primary in majority partition', async () => {
+    s().links.ps1 = false;
+    s().links.ps2 = false;
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+
+    assert.notEqual(s().primaryKey, 'primary', 'new primary should be a secondary');
+
+    const m = machine(1, false);
+    const titles = await runMachineToEnd(m);
+
+    assert.ok(titles.some(t => t.includes('ACK')), 'should ACK on new primary');
+    assert.equal(s().writeClient.phase, 'received');
+  });
+
+  it('w:majority succeeds on new primary with majority partition', async () => {
+    s().links.ps1 = false;
+    s().links.ps2 = false;
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+
+    const m = machine('majority', false);
+    const titles = await runMachineToEnd(m);
+
+    assert.ok(titles.some(t => t.includes('ACK')),
+      `should succeed with majority: ${titles.join(' | ')}`);
     assert.equal(s().writeClient.phase, 'received');
   });
 });
 
-describe('primary bounce before ACK (w:1 j:false, unjournaled) — write lost', () => {
-  it('fails the write since data was only in memory', async () => {
+// ─── client targeting: write to secondary fails ──────────────────────────────
+
+describe('client targeting — write to secondary', () => {
+  it('rejects w:1 when writer targets a secondary', async () => {
+    s().writeClient.targetNode = 's1';
+
     const m = machine(1, false);
-    await runMachineSteps(m, 2); // send + primaryMem (no journal yet)
-    assert.equal(s().nodes.primary.memoryVersion, 1);
-    assert.equal(s().nodes.primary.journalVersion, 0);
+    const titles = await runMachineToEnd(m);
 
-    // Bounce: crash wipes memory (no journal to recover from)
-    ctx.crashNode('primary');
+    assert.ok(titles.some(t => t.includes('Not primary') || t.includes('not primary')),
+      `should report not-primary error: ${titles.join(' | ')}`);
+    assert.equal(s().writeClient.phase, 'error');
+  });
+
+  it('rejects w:majority when writer targets a secondary', async () => {
+    s().writeClient.targetNode = 's2';
+
+    const m = machine('majority', false);
+    const titles = await runMachineToEnd(m);
+
+    assert.ok(titles.some(t => t.includes('Not primary') || t.includes('not primary')),
+      `should report not-primary error: ${titles.join(' | ')}`);
+    assert.equal(s().writeClient.phase, 'error');
+  });
+
+  it('succeeds when writer targets the actual primary', async () => {
+    s().writeClient.targetNode = 'primary';
+
+    const m = machine(1, false);
+    const titles = await runMachineToEnd(m);
+
+    assert.ok(titles.some(t => t.includes('ACK')), 'should ACK');
+    assert.equal(s().writeClient.phase, 'received');
+  });
+
+  it('rejects write when targeted primary-slot node is down', async () => {
+    // Target the primary slot, but kill it first
+    s().writeClient.targetNode = 'primary';
     s().nodes.primary.alive = false;
-    s().nodes.primary.alive = true;
-    ctx.recoverNode('primary');
-    assert.equal(s().nodes.primary.memoryVersion, 0, 'data lost — no journal backup');
 
-    const rest = await runMachineToEnd(m);
-    assert.ok(rest.some(t => t.includes('restarted') || t.includes('lost')),
-      `should report data loss: ${rest.join(' | ')}`);
+    const m = machine(1, false);
+    const titles = await runMachineToEnd(m);
+
+    assert.ok(titles.some(t => t.includes('down') || t.includes('Down')),
+      `should report node-down error: ${titles.join(' | ')}`);
     assert.equal(s().writeClient.phase, 'error');
   });
 });

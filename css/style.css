@@ -78,7 +78,7 @@ button.read-btn:disabled { background: var(--border); color: var(--textMuted); }
 
 /* ── Stage (full-width canvas row) ── */
 .stage { padding: 14px; position: relative; width: 100%; max-width: 1200px; }
-#canvas { display: block; width: 100%; height: 395px; }
+#canvas { display: block; width: 100%; height: 510px; }
 
 /* ── Consistency overlays (float over canvas near client icons) ── */
 .consistency-overlay {
@@ -193,6 +193,23 @@ details[open] .step-details-toggle::before { content: '▾ '; }
   text-align: center;
   margin-top: 1px;
 }
+.canvas-force-election-btn {
+  background: var(--amberDarkBg, #332800);
+  border-color: var(--amber);
+  color: var(--amber);
+}
+.canvas-force-election-btn:hover {
+  background: var(--amber);
+  color: var(--bg);
+}
+.canvas-reset-ui-btn {
+  position: absolute; bottom: 8px; right: 8px; z-index: 10;
+  display: none; width: 28px; height: 28px;
+  background: var(--cardBg, #1a1a2e); border: 1px solid var(--borderMuted, #333);
+  border-radius: 6px; color: var(--textSecondary, #888);
+  font-size: 16px; line-height: 1; cursor: pointer; padding: 0;
+}
+.canvas-reset-ui-btn:hover { color: var(--text, #eee); border-color: var(--blue, #5af); }
 
 /* ── Log ── */
 .log-card { width: 100%; max-width: 1200px; }
@@ -275,6 +292,37 @@ details[open] .step-details-toggle::before { content: '▾ '; }
   border-left: 1px solid var(--border);
   border-top: 1px solid var(--border);
 }
+
+/* ── Scenarios panel ─────────────────────────────────── */
+.scenarios-panel { width: 100%; max-width: 1200px; }
+.scenarios-summary {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 16px; cursor: pointer;
+  font-size: 0.78rem; font-weight: 700; color: var(--textSecondary);
+  text-transform: uppercase; letter-spacing: 0.06em;
+  user-select: none; list-style: none;
+}
+.scenarios-summary::-webkit-details-marker { display: none; }
+.scenarios-summary::after { content: '▸'; font-size: 0.7rem; margin-left: auto; color: var(--textMuted); transition: transform 0.2s; }
+details[open] .scenarios-summary::after { transform: rotate(90deg); }
+.scenarios-summary:hover { color: var(--textBright); }
+.scenarios-list { padding: 0 12px 14px; }
+.scenario-group-hdr { padding: 10px 4px 4px; }
+.scenario-group-title { font-size: 0.76rem; font-weight: 700; color: var(--textBright); }
+.scenario-group-sub  { font-size: 0.68rem; color: var(--textMuted); margin-top: 1px; }
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 8px; padding: 6px 0;
+}
+.scenario-item {
+  background: var(--inputBg); border: 1px solid var(--border); border-radius: 8px;
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 5px;
+}
+.scenario-name { font-size: 0.78rem; font-weight: 700; color: var(--textBright); }
+.scenario-what { font-size: 0.72rem; color: var(--textSecondary); line-height: 1.45; flex: 1; }
+.scenario-next { font-size: 0.68rem; color: var(--textMuted); font-style: italic; line-height: 1.4; }
+.scenario-btn  { margin-top: 6px; padding: 4px 10px; font-size: 0.72rem; align-self: flex-start; }
 
 /* ── Footer ──────────────────────────────────────────── */
 footer { font-size: 0.7rem; color: var(--footerText); text-align: center; line-height: 1.8; }

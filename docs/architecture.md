@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-03-15 from a complete review of the live codebase (Iteration 14).*
+*Last updated 2026-04-08 (Iteration 19: topology locking).*
 
 ---
 
@@ -20,6 +20,7 @@ css/style.css           — all CSS (variables driven by theme.js)
 js/
   theme.js              — design tokens (dark/light), CSS variable injection, toggle logic
   state.js              — shared state, doc helpers, resolveReadTarget, getLinkBetween
+  texts.js              — all user-facing strings (step titles, tooltips, explanations, canvas tips)
   logger.js             — log() function (separated to break circular dep)
   icons.js              — SVG Path2D constants (ICON_LEAF, ICON_RS)
   draw.js               — canvas rendering, hit testing, consistency overlays, layout
@@ -41,14 +42,17 @@ docs/
   ha-scenarios.md       — HA scenarios extracted from PPTX (still valid)
   DEPRECATED_*.md       — superseded docs kept for history
 prompts/
-  quality-standards.md  — AI coding quality standards for this project
+  quality-standards.md    — AI coding quality standards for this project
   iteration-log-prompt.md — prompt template for creating iteration logs
   quality-check-prompt.md — post-change verification checklist
-logs/iterations/        — iteration logs (01–14) + TEMPLATE.md
+  contributor-guide.md    — quick-start context for new contributors or AI sessions
+  small-model-usage.md    — guidance and prompt templates for cheaper AI models
+  test-gap-backlog.md     — prioritized untested/under-tested areas
+logs/iterations/          — iteration logs (01–18) + TEMPLATE.md
 index.v1–v6.html        — legacy HTML snapshots (not used)
 ```
 
-Script load order: `theme.js` (in `<head>`) → `state.js → logger.js → icons.js → draw.js → engine.js → simulation.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
+Script load order: `theme.js` (in `<head>`) → `state.js → texts.js → logger.js → icons.js → draw.js → engine.js → simulation.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
 
 Test runner: Node.js built-in `node --test` (Node 18+). Run with `npm test`. Tests use `node:vm` to load source files in an isolated context with browser globals stubbed.
 
@@ -64,19 +68,21 @@ state = {
     s2:      { ... },
   },
   primaryKey: 'primary',  // current primary — changes on election (can become 's1' or 's2')
-  writeClient: { x, y, phase, lastWrittenVersion },
+  writeClient: { x, y, phase, lastWrittenVersion, targetNode: nodeKey | null },
   readClient:  {
     x, y, phase,
     lastReceivedVersion: { id, dirty } | null,
     sessionActive: bool,
     sessionSnapshotId: number | null,
+    targetNode: nodeKey | null,
   },
   particles:   [],
   links: {
-    ps1: bool,  // physical wire 'primary'-slot ↔ 's1'-slot
-    ps2: bool,  // physical wire 'primary'-slot ↔ 's2'-slot
-    wp:  bool,  // writer → current primary
-    rp:  bool,  // reader → target
+    ps1:  bool,  // physical wire 'primary'-slot ↔ 's1'-slot
+    ps2:  bool,  // physical wire 'primary'-slot ↔ 's2'-slot
+    s1s2: bool,  // physical wire 's1'-slot ↔ 's2'-slot (triangle topology)
+    wp:   bool,  // writer → write target (stale primary in split-brain)
+    rp:   bool,  // reader → target
   },
   doc: {
     versions: [{ id, op, ackedBy: Set<nodeKey> }],
@@ -111,16 +117,20 @@ Crash behavior:
 | Function | Location | Purpose |
 |---|---|---|
 | `resetDoc()` | state.js | Clears all doc/version state AND resets `primaryKey` + node labels to defaults |
-| `resetLinks()` | state.js | Sets all 4 links to `true` |
-| `getLinkBetween(a, b)` | state.js | Returns the link key (`'ps1'` or `'ps2'`) for two node slot keys, or `null` for s1↔s2 |
-| `isReachableForWrite(key)` | state.js | Node alive AND link from current primary to it is connected |
+| `resetLinks()` | state.js | Sets all 5 links to `true` |
+| `getLinkBetween(a, b)` | state.js | Returns the link key (`'ps1'`, `'ps2'`, or `'s1s2'`) for two node slot keys |
+| `effectiveWriteTarget()` | state.js | Returns `writeClient.targetNode \|\| primaryKey` — the node the write client writes to |
+| `isReachableForWrite(key)` | state.js | Node alive AND link from `effectiveWriteTarget()` to it is connected |
+| `getPartition(nodeKey)` | state.js | BFS over alive nodes following up links; returns Set of reachable node keys |
+| `isPrimaryPartitioned()` | state.js | True when current primary is alive but its partition is smaller than majority |
+| `isNodeIsolated(nodeKey)` | state.js | True when a non-primary node is alive but cannot reach the current primary |
 | `getServedVersion(nodeKey, rc)` | state.js | Returns `{ id, dirty }` based on `memoryVersion` (rc:local/available) or `majorityCommitId` (others) |
 | `advanceMajorityCommit()` | state.js | Scans versions backward; cumulative: if vN has ≥2 acks, all prior are committed |
 | `recomputeMajorityCommit()` | state.js | Full recomputation from scratch (used after crash retracts acks) |
 | `journalFlush(nodeKey)` | state.js | Sets `journalVersion = memoryVersion` — models WiredTiger journal write |
 | `crashNode(nodeKey)` | state.js | Wipes `memoryVersion` to 0, retracts acks above `journalVersion`, recomputes majority |
 | `recoverNode(nodeKey)` | state.js | Sets `memoryVersion = journalVersion` — models journal recovery on restart |
-| `resolveReadTarget(rc, readPref)` | state.js | Picks which node serves a read (needed by both draw.js and simulation.js) |
+| `resolveReadTarget(rc, readPref)` | state.js | Returns `readClient.targetNode` if set, else picks via rc/readPref logic |
 
 ---
 
@@ -180,7 +190,7 @@ Uses `PANEL_EL_IDS` lookup map (not string manipulation). Step explain text rend
 
 ### `createWriteMachine(w, j)` — lazy step generator
 
-Returns a machine `{ history, isDone, nextStep() }` that dynamically evaluates the live topology to decide the next step. When a node crashes or a link partitions mid-replication, the machine re-targets remaining alive secondaries automatically.
+Returns a machine `{ history, isDone, nextStep() }` that evaluates the topology at each step to decide the next action. Topology is locked during execution (the UI blocks node/link/client-link clicks while any engine is active), so the machine assumes stable topology throughout — no mid-operation guards needed.
 
 **Internal phase progression:** All paths follow the same structure:
 - `send` → `primaryMem` → `primaryJournal` → `repl` → `done`
@@ -217,17 +227,12 @@ The primary always flushes to journal before any replication begins, regardless 
 - `w:2 j:false`: send → primaryMem → primaryJournal → S1Mem → S1Journal → ACK → S2Mem → S2Journal → done
 - `w:3 j:false`: send → primaryMem → primaryJournal → S1Mem → S1Journal → S2Mem → S2Journal → ACK → done
 
-**Primary data integrity invariant:**
-- `primaryAlive()` — checks `state.nodes[primaryKey].alive`
-- `primaryHasData()` — checks `memoryVersion >= nextId` (data still in memory after a bounce)
-- `primaryCanServe()` — both alive AND has data; used by all steps after `primaryMem`
-- `primaryUnavailableStep()` — handles dead primary (error) and bounced-but-lost-data primary (abort if acked, error if not)
-- `guardRun(fn)` / `guardRunAlive(fn)` — wrappers for step `run()` functions that check invariants before executing
+All write machine references use `effectiveWriteTarget()` instead of `state.primaryKey` directly, enabling writes to a stale primary during split-brain scenarios.
+
+**Topology locking:** The UI (`isAnyEngineActive()` in `app.js`) blocks all node, link, and client-link clicks while any engine is active. This eliminates the need for mid-operation liveness guards (`guardRun`, `guardRunAlive`, `primaryUnavailableStep` — all removed in Iteration 19). Users configure topology *before* starting an operation, then observe the result. The cursor shows `not-allowed` when hovering over locked elements.
 
 **Pedagogical safety notes:**
 - `isDefault` and `defaultNote` — when `w !== 'majority'`, error/ACK explain texts append a blue info note explaining that the MongoDB default (`w:majority` since v5.0) prevents the demonstrated issue.
-
-Run-time liveness guards in step `run()` functions ensure that if a node dies between `nextStep()` (step generation) and `step.run()` (step execution), the step skips gracefully and the machine retargets on the next iteration.
 
 ### `buildReadSteps(rc, readPref, snapshotOverrideId?)`
 
@@ -240,14 +245,24 @@ Returns a pre-built step array (wrapped with `arrayMachine` in app.js).
 5. RC-specific steps (local/available, majority, snapshot, linearizable)
 6. Return data particle → client
 
-### `buildElectionSteps()`
+### `buildElectionSteps(opts?)`
 
-Returns a pre-built step array (wrapped with `arrayMachine` in app.js).
+Returns a pre-built step array (wrapped with `arrayMachine` in app.js). Accepts optional `{ forcePartition: true }` for split-brain elections.
 
+**Normal election (primary dead):**
 1. Picks candidates: alive non-primary nodes sorted by `memoryVersion` descending
 2. **Quorum check:** requires `totalAlive >= majority` (2 of 3). If not met, returns error step explaining RAFT majority requirement
 3. **Step 1 — Campaign:** winner enters `candidate` phase (purple dashed ring), explain text describes RAFT mechanics
-4. **Step 2 — Elected:** winner becomes primary, old primary relabeled "Old Primary", uncommitted writes rolled back (both `memoryVersion` and `journalVersion` capped), snapshot sessions invalidated if locked version was rolled back
+4. **Step 2 — Elected:** winner becomes primary, old primary relabeled as secondary, uncommitted writes rolled back
+
+**Split-brain election (`forcePartition: true`):**
+1. Finds the largest partition that excludes the current primary using `getPartition()`
+2. **Quorum check:** partition must form a majority (≥2 nodes). Otherwise returns error step
+3. Same campaign + elected steps, but additionally:
+   - Old primary **instantly steps down** and becomes a secondary (e.g. "Secondary 1")
+   - Old primary is now isolated — detected dynamically by `isNodeIsolated()` (amber dashed ring)
+   - Writes route to the new primary in the majority partition
+   - No "danger zone" where stale writes succeed — simplified for pedagogical clarity
 
 ---
 
@@ -258,7 +273,7 @@ Draw cycle order:
 2. `drawRSBox()` — dashed boundary with RS icon + "Replica Set · 3-node P-S-S · majority = 2"
 3. `drawReplicationLinks()` — uses `getLinkBetween()` for dynamic primary; amber × for partition, red × for dead
 4. `drawWriteClientLine()` / `drawReadClientLine()` — to current primary / resolved target
-5. `drawNode()` for each node — role determined dynamically by `k === state.primaryKey`; candidate phase shows purple dashed ring; recovering phase shows blue dashed ring
+5. `drawNode()` for each node — role determined dynamically: `primary`, `isolated` (via `isNodeIsolated()`), or `secondary`. Isolated nodes get amber dashed ring + "(isolated)" label suffix. Candidate phase → purple dashed ring; recovering → blue dashed ring
 6. `drawWriteClient()` / `drawReadClient()` — session ring + "Session @ vX" label when active
 7. `drawDocLedger()` — floating box between clients showing doc #1 state (in-flight vs committed vs durable)
 8. `drawParticles()` — eased animation at `PARTICLE_MS=1400ms`
@@ -281,15 +296,17 @@ When memory is ahead of disk (data in cache but not journaled), a down-arrow ind
 
 `canvasW`/`canvasH` cached in `resizeCanvas()` (not re-read via `getBoundingClientRect()` per frame). `sel-w`/`sel-rc`/`sel-readpref` read once per draw cycle and passed as arguments.
 
-Layout: `computeLayout()` uses fixed absolute `topY = 40` (clients) and `nodeY = 245` (nodes) for consistent spacing regardless of canvas height. Canvas height is `365px`.
+Layout: `computeLayout()` places nodes in a **triangle topology**: clients at `topY = 40`, primary at `priY = 185`, secondaries at `secY = 310`. Canvas height is `460px`. The S1↔S2 link at the bottom enables partition scenarios where the primary is isolated from both secondaries.
 
 ### Hit testing
 
-`hitTest(mx, my)` → `{ type: 'node'|'link'|'clientLink', key }`. Node hits use `NR + 5` radius; link hits use `pointToSegDist` with `NR + 8` dead zones around endpoints; client link hits use `CR + 5`.
+`hitTest(mx, my)` → `{ type: 'node'|'link'|'client'|'clientLink', key }`. Client circles checked first (above everything visually). Node hits use `NR + 5` radius; link hits use `pointToSegDist` with `NR + 8` dead zones around endpoints; client link hits use `CR + 5`. Hover target drives native `canvas.title` tooltip via `canvasTipFor()` in `app.js`, with all tooltip strings centralized in `TEXTS.canvasTips`.
 
 ### Canvas election button
 
-A `<button>` absolutely positioned inside `.stage`, shown/hidden by `syncButtons()`. Positioned at `(14 + pNode.x, 14 + pNode.y + NR + 18)` via inline style when the current primary is dead and candidates exist. Includes RAFT tooltip on hover.
+Two `<button>` elements absolutely positioned inside `.stage`, shown/hidden by `syncButtons()`:
+- **Trigger Election** — positioned below dead primary node when primary is down and quorum exists. Includes RAFT tooltip.
+- **Force Election (partition)** — positioned at the midpoint of S1 and S2 when primary is alive but partitioned (`isPrimaryPartitioned()` returns true) and no split-brain is already active.
 
 ### Animation control
 
@@ -334,12 +351,21 @@ All via `addEventListener` (no inline `onclick`). Button IDs: `btn-reset`, `btn-
 - `handleWrite()` → `runMachine(createWriteMachine(w, j), writeEngine, 'write-step-panel')`
 - `handleRead()` → `runMachine(arrayMachine(buildReadSteps(rc, readPref)), readEngine, 'read-step-panel')`
 - `handleElection()` → `runMachine(arrayMachine(buildElectionSteps()), electionEngine, 'write-step-panel')`
+- `handleForceElection()` → `runMachine(arrayMachine(buildElectionSteps({ forcePartition: true })), electionEngine, 'write-step-panel')`
+- `checkPartitionHealed()` → called when a partitioned link is restored; caps reconnected node versions to majority-committed, logs healing
 
 ### Canvas interaction
 
-- **Node click:** toggle alive/dead. On kill: `crashNode()` wipes memory, preserves journal, retracts memory-only acks, recomputes majority. On restart: `recoverNode()` restores memory from journal, enters `recovering` phase for 600ms. **If a write is in progress, the write engine is NOT reset** — the write machine adapts dynamically on its next `nextStep()` call. Read and election engines are reset.
-- **Link click:** toggle partition via `getLinkBetween()`; same behavior — write engine preserved if active, read/election reset
-- **Client link click:** toggle wp/rp; if mid-engine, aborts that engine and marks client as error
+- **Topology locking:** All node, link, and client-link clicks are blocked (`isAnyEngineActive()` guard in `handleCanvasClick`) while any engine is in-flight. Cursor shows `not-allowed` on hover. Client targeting (`cycleClientTarget`) is also locked. Client dragging (repositioning) remains allowed since it doesn't affect topology.
+- **Node click (when unlocked):** toggle alive/dead. On kill: `crashNode()` wipes memory, preserves journal, retracts memory-only acks, recomputes majority. On restart: `recoverNode()` restores memory from journal, enters `recovering` phase for 600ms. Resets all engine visuals.
+- **Link click (when unlocked):** toggle partition via link key from hitTest (ps1, ps2, or s1s2). If restoring a link, triggers `checkPartitionHealed()` which caps reconnected node versions and logs healing. Resets all engine visuals.
+- **Client link click (when unlocked):** toggle wp/rp connection
+- **Client circle click (no drag):** cycles `targetNode` through `null → primary → s1 → s2 → null`. Target label shown below client circle. Writing to a non-primary target produces `NotWritablePrimary` error. Reading from a targeted node bypasses readPreference logic.
+- **Client circle drag:** repositions the client on the canvas; connection lines follow. `clientDragged` flags track whether positions have been user-modified. A "Reset UI" button appears when clients have been dragged or targeted.
+
+### Canvas tooltips
+
+`canvasTipFor(hit)` maps the current hover target to a native `canvas.title` string. All tooltip texts are centralized in `TEXTS.canvasTips` (`js/texts.js`). Covers nodes, links (including S1↔S2 "heartbeat only" distinction), client circles (showing current/next target), and client connection lines.
 
 ### Popups
 
@@ -367,15 +393,16 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 │            │  │ ELECTION │          │ │                   │
 │            │  └──────────┴──────────┘ │                   │
 ├────────────┴──────────────────────────┴───────────────────┤
-│ Canvas stage (position:relative, height:365px)             │
+│ Canvas stage (position:relative, height:460px)             │
 │  [writer overlay]    [animation area]   [reader overlay]   │
 │  [Write Client]      [doc ledger]       [Read Client]      │
 │       │                                      │             │
-│       └──────[Primary/Old Primary]───────────┘             │
-│                /              \                             │
-│       [Secondary 1]    [Secondary 2]                       │
+│       └────────────[Primary]─────────────────┘             │
+│                   /          \                              │
+│          [Secondary 1] ── [Secondary 2]  (triangle)        │
 │                                                            │
-│  [⚡ Trigger Election] ← appears below dead primary        │
+│  [⚡ Trigger Election] ← below dead primary                │
+│  [⚡ Force Election]   ← between S1/S2 when partitioned    │
 ├───────────────────────────────────────────────────────────┤
 │ Event log (monospace, max-height:120px, scrollable)         │
 ├───────────────────────────────────────────────────────────┤
@@ -387,7 +414,7 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-seen`
 
 ## 10. Testing (`test/`)
 
-85 tests across 4 files, zero external dependencies. Uses Node's built-in `node:test` runner.
+116 tests across 4 files, zero external dependencies. Uses Node's built-in `node:test` runner.
 
 ### Test harness (`test/helpers.js`)
 
@@ -401,10 +428,10 @@ Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isol
 
 | File | Tests | Covers |
 |---|---|---|
-| `state.test.js` | 24 | `journalFlush`, `crashNode` (ack retraction, majority recompute), `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget`, `getServedVersion`, `isReachableForWrite` |
-| `machine.test.js` | 35 | Write machine: w:1/2/3/majority/0, j:true/false, w:0+j:true demotion, writer disconnect, primary down, crash-retarget, unsatisfiable wc, link partition, sequential writes, node phase transitions, **interleaved journal ordering** (j:false), **primary bounce scenarios** (data lost pre/post-ACK) |
-| `reads.test.js` | 16 | Read steps: rc:local (dirty flag), rc:majority (frozen), rc:linearizable (blocks, runtime topology, fresh served value), rc:snapshot (session lock), reader disconnect, primary dead fallback |
-| `election.test.js` | 10 | Election: winner selection (highest oplog), quorum failure, rollback of uncommitted writes, majority-committed preserved, version capping, snapshot session invalidation |
+| `state.test.js` | 48 | `journalFlush`, `crashNode`, `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget` (incl. manual targeting), `getServedVersion`, `isReachableForWrite`, `getLinkBetween` (s1↔s2), `getPartition`, `isPrimaryPartitioned`, `effectiveWriteTarget` (incl. targetNode override), `isNodeIsolated` |
+| `machine.test.js` | 31 | Write machine: w:1/2/3/majority/0, j:true/false, pre-existing topology (secondaries down, link partitioned), partitioned primary w:1/majority, post-force-election writes, client targeting (write-to-secondary error, target-down error) |
+| `reads.test.js` | 16 | Read steps: rc:local, rc:majority, rc:linearizable, rc:snapshot, reader disconnect, fallback |
+| `election.test.js` | 15 | Election: happy path, quorum failure, rollback, snapshot invalidation, split-brain election (partition-aware, winner selection, old primary becomes secondary, isolated detection) |
 
 ---
 
@@ -419,10 +446,10 @@ Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isol
 | ~~B1~~ | ~~**`w:0 + j:true` not demoted to `w:1`** — simulator showed fire-and-forget; MongoDB demotes to w:1.~~ | High | ✅ Fixed |
 | ~~B2~~ | ~~**`w:majority + j:false` explain text wrong** — implied fragility on default config where `writeConcernMajorityJournalDefault:true` overrides j.~~ | Medium | ✅ Fixed |
 | ~~B3~~ | ~~**Election succeeded with 1 alive node** — RAFT requires majority (2 of 3). Simulator allowed election with 1 secondary.~~ | High | ✅ Fixed |
-| ~~B4~~ | ~~**Static step array didn't adapt to topology changes** — crashing a node mid-replication still produced ACK from retracted acks.~~ | High | ✅ Fixed (write state machine) |
-| B5 | **`getLinkBetween` only knows primary↔s1 and primary↔s2 slot pairs** — after election where s1 becomes primary, the s1↔s2 link returns `null`. Partition toggling between the new primary and remaining secondary doesn't work. | Medium | Open |
+| ~~B4~~ | ~~**Static step array didn't adapt to topology changes**~~ — topology is now locked during in-flight operations; mid-operation changes are blocked by the UI. | High | ✅ Superseded (topology locking) |
+| ~~B5~~ | ~~**`getLinkBetween` only knows primary↔s1 and primary↔s2 slot pairs**~~ — now returns `'s1s2'` for the s1↔s2 pair. Triangle topology with 3 inter-node links. | Medium | ✅ Fixed |
 | B6 | **`resolveReadTarget` ignores reader network reachability** — checks `node.alive` but not per-node reader connectivity. Single `rp` boolean is a model simplification. | Low | Known limitation |
-| B7 | **Old primary toggled back online after election** — comes alive with "Old Primary" label but doesn't trigger rollback/sync. After election, if the NEW primary is killed for a second election, `getLinkBetween` returns `null` for the new topology. | Medium | Open (depends on B5) |
+| ~~B7~~ | ~~**Old primary toggled back online after election**~~ — `checkPartitionHealed()` caps reconnected node versions and logs healing when a partitioned link is restored. | Medium | ✅ Fixed |
 
 ### Design Limitations
 
@@ -461,7 +488,8 @@ Uses `node:vm` to load `state.js`, `simulation.js`, and `engine.js` into an isol
 - **Dark/light theming** via CSS custom properties driven by `js/theme.js`
 - **Custom tooltip system** with delegated event handling and per-dropdown/per-button definitions
 - **Non-default config badge** on `w` dropdown
-- Test suite (85 tests) covering state helpers, write machine (including bounce/journal ordering), read steps, and elections
+- Test suite (116 tests) covering state helpers, write machine, read steps, elections, split-brain scenarios, and client targeting
+- **Topology locking** — UI blocks all node/link/client-link clicks while any engine is active. Eliminates mid-operation topology change complexity (removed `guardRun`, `guardRunAlive`, `primaryUnavailableStep`, `_guardAbort`, `endAsyncWork` — ~80 lines of guard code). Cursor shows `not-allowed` on locked elements.
 
 ### Open
 

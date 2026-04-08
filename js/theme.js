@@ -84,6 +84,7 @@ const THEMES = {
 
     // ── Canvas: links ──
     linkDefault:  '#4A7090',
+    linkSecSec:   '#3A5A70',
     linkHover:    '#7AAAC8',
     linkBroken:   '#4A2020',
     linkHoverMid: '#5A8AAA',
@@ -206,6 +207,7 @@ const THEMES = {
     phaseRecovBg: '#E0F0FC',
 
     linkDefault:  '#7AA0C0',
+    linkSecSec:   '#98B8D0',
     linkHover:    '#4080A8',
     linkBroken:   '#D0A0A0',
     linkHoverMid: '#6090A8',

@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Last updated 2026-03-15 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 17.*
+*Last updated 2026-03-15 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 18 (Refinement 3).*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -90,6 +90,16 @@ This document separates simulation behaviors into four categories:
 | Failed write rolls back `latestId` and version entry | simulation.js `failWrite` | Prevents stale UI state (e.g., "Update" button when no doc exists). |
 | Reads don't change node write-state colors | simulation.js `buildReadSteps` | Read operations don't mutate node phases — node colors reflect write concern state only. |
 | All user-facing texts centralized | texts.js | Single source of truth for all step titles, explains, tooltips, and consistency views. |
+| Split-brain: w:1 succeeds on partitioned primary | simulation.js | Partitioned primary has `reachableCount=1 >= 1`, write succeeds locally. |
+| Split-brain: w:majority fails on partitioned primary | simulation.js | Partitioned primary has `reachableCount=1 < 2`, cannot achieve write concern. |
+| Split-brain: partition-aware election in secondary majority | simulation.js | `buildElectionSteps({ forcePartition: true })` uses `getPartition()` to find majority partition among connected secondaries. |
+| Split-brain: old primary steps down instantly on force election | simulation.js | Old primary becomes a secondary; writes route to new primary. No "danger zone" stale writes — simplified for pedagogical clarity. |
+| Split-brain: isolated nodes detected dynamically | state.js, draw.js | `isNodeIsolated()` checks if a node can reach the primary. Isolated nodes get amber dashed ring + "(isolated)" label. |
+| Split-brain: partition healing caps versions | app.js | `checkPartitionHealed()` caps reconnected node versions to majority-committed level, logs healing. |
+| Triangle topology with S1↔S2 link | state.js, draw.js | All 3 inter-node links modeled (`ps1`, `ps2`, `s1s2`); triangle layout. S1↔S2 visually distinct (thinner, shorter dash) with "heartbeat only" tooltip. |
+| Secondary↔secondary link visual is role-based | draw.js | `isSecSec` checks `aKey !== primaryKey && bKey !== primaryKey`, not link key — correct after election when roles swap. |
+| Client targeting: manual node selection | state.js, app.js | Click client circle to cycle `targetNode` through all nodes. `effectiveWriteTarget` and `resolveReadTarget` respect override. |
+| Client targeting: NotWritablePrimary error | simulation.js | Writing to a non-primary target produces clear error with MongoDB error name. |
 
 ---
 
@@ -125,13 +135,15 @@ This document separates simulation behaviors into four categories:
 
 ---
 
-### ~~I4. Static step array didn't adapt to topology changes during write~~ ✅ Fixed
+### ~~I4. Static step array didn't adapt to topology changes during write~~ ✅ Superseded
 
-**Problem:** The old `buildWriteSteps()` function pre-computed an ordered list of steps before the write started. If a secondary crashed mid-replication, the pre-built steps would still target it, producing incorrect behavior (e.g., ACKing the client for data that was never replicated to a surviving node).
+**Problem:** The old `buildWriteSteps()` function pre-computed an ordered list of steps before the write started. If a secondary crashed mid-replication, the pre-built steps would still target it.
 
-**Fix:** Replaced `buildWriteSteps()` with `createWriteMachine()` — a lazy step generator that evaluates live topology on each `nextStep()` call. The machine dynamically retargets surviving secondaries when a node crashes or a link partitions mid-replication. Run-time liveness guards in each step's `run()` function handle the edge case where a node dies between step generation and execution.
+**Fix (Iteration 18):** Replaced with `createWriteMachine()` — a lazy step generator with mid-operation liveness guards.
 
-**File:** `simulation.js` (`createWriteMachine`), `engine.js` (`runMachine`), `app.js` (handler updates).
+**Superseded (Iteration 19):** Topology is now locked while any engine is active. The UI (`isAnyEngineActive()` in `app.js`) blocks node/link/client-link clicks during operations, so mid-operation topology changes cannot occur. All runtime guard code (`guardRun`, `guardRunAlive`, `primaryUnavailableStep`, `_guardAbort`, `endAsyncWork`) was removed. Users configure topology *before* starting an operation.
+
+**File:** `simulation.js` (`createWriteMachine`), `app.js` (`isAnyEngineActive`, `handleCanvasClick`).
 
 ---
 
@@ -161,9 +173,9 @@ This document separates simulation behaviors into four categories:
 
 **Problem:** The send step optimistically set `state.doc.latestId = nextId` and pushed a version entry. If the write subsequently failed (primary crash), these were never rolled back — causing the UI to show "Update" instead of "New doc".
 
-**Fix:** Added rollback logic to `failWrite()` and `guardRun()` that removes the version entry and reverts `latestId` when a write errors out.
+**Fix:** Added rollback logic to `failWrite()` that removes the version entry and reverts `latestId` when a write errors out. (The `guardRun` wrapper was removed in Iteration 19; `failWrite` still handles rollback for pre-existing topology errors like writer disconnected or target-not-primary.)
 
-**File:** `simulation.js` (`failWrite`, `guardRun`).
+**File:** `simulation.js` (`failWrite`).
 
 ---
 
@@ -189,7 +201,7 @@ This document separates simulation behaviors into four categories:
 
 | # | Feature | MongoDB behavior | Impact on educational value |
 |---|---|---|---|
-| M1 | **Primary auto-step-down** | Isolated primary steps down automatically | Key safety mechanism; prevents stale primary from accepting w:1 writes |
+| M1 | **Primary auto-step-down** | Isolated primary steps down automatically | Partially modeled: force election + reconciliation simulates the effect, but step-down is manual (user triggers it) rather than automatic. |
 | M2 | **Retryable writes** | Drivers auto-retry with unique txn IDs | Central to "zero missed operations" HA story |
 | M3 | **wtimeout** | Configurable timeout; returns error without rollback | Simulator models blocking but has no timeout control |
 | M4 | **Causal consistency sessions** | `afterClusterTime` ensures monotonic reads, read-your-own-writes | Key for reading from secondaries safely |
@@ -208,7 +220,7 @@ This document separates simulation behaviors into four categories:
 
 | Category | Count |
 |---|---|
-| Correct | ~40 behaviors (including 8 storage-layer + dynamic topology + 3 runtime linearizable + journal ordering + primary bounce + UI states) |
+| Correct | ~51 behaviors (13 write concern + 13 read concern + 4 read preference + 4 election + 8 storage-layer + 9 split-brain/topology/targeting) |
 | ~~Incorrect~~ Fixed | 7 of 8 (I6 deferred as known limitation) |
 | Imprecise | 11 |
-| Missing | 12 |
+| Missing | 12 (M1 partially addressed) |

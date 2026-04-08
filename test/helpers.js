@@ -92,6 +92,8 @@ function resetState(ctx) {
   ctx.state.nodes.primary.label = 'Primary';
   ctx.state.nodes.s1.label = 'Secondary 1';
   ctx.state.nodes.s2.label = 'Secondary 2';
+  ctx.state.writeClient.targetNode = null;
+  ctx.state.readClient.targetNode = null;
   ctx.state.particles = [];
 }
 

@@ -227,3 +227,168 @@ describe('isReachableForWrite', () => {
     assert.equal(ctx.isReachableForWrite('s1'), true);
   });
 });
+
+// ─── getLinkBetween (s1↔s2) ─────────────────────────────────────────────────
+
+describe('getLinkBetween — s1↔s2 link', () => {
+  it('returns s1s2 for s1,s2', () => {
+    assert.equal(ctx.getLinkBetween('s1', 's2'), 's1s2');
+  });
+
+  it('returns s1s2 for s2,s1 (symmetric)', () => {
+    assert.equal(ctx.getLinkBetween('s2', 's1'), 's1s2');
+  });
+
+  it('s1s2 link exists in state.links and defaults to true', () => {
+    assert.equal(ctx.state.links.s1s2, true);
+  });
+});
+
+// ─── getPartition ───────────────────────────────────────────────────────────
+
+describe('getPartition', () => {
+  it('returns all 3 nodes when all links are up', () => {
+    const p = ctx.getPartition('s1');
+    assert.deepEqual(p, new Set(['primary', 's1', 's2']));
+  });
+
+  it('returns {s1, s2} when primary is partitioned', () => {
+    ctx.state.links.ps1 = false;
+    ctx.state.links.ps2 = false;
+    const p = ctx.getPartition('s1');
+    assert.deepEqual(p, new Set(['s1', 's2']));
+  });
+
+  it('returns {primary} when primary is partitioned', () => {
+    ctx.state.links.ps1 = false;
+    ctx.state.links.ps2 = false;
+    const p = ctx.getPartition('primary');
+    assert.deepEqual(p, new Set(['primary']));
+  });
+
+  it('excludes dead nodes', () => {
+    ctx.state.nodes.s2.alive = false;
+    ctx.state.links.ps1 = false;
+    ctx.state.links.ps2 = false;
+    const p = ctx.getPartition('s1');
+    assert.deepEqual(p, new Set(['s1']));
+  });
+
+  it('returns {primary, s1} when only ps2 and s1s2 are down', () => {
+    ctx.state.links.ps2 = false;
+    ctx.state.links.s1s2 = false;
+    const p = ctx.getPartition('primary');
+    assert.deepEqual(p, new Set(['primary', 's1']));
+  });
+});
+
+// ─── isPrimaryPartitioned ───────────────────────────────────────────────────
+
+describe('isPrimaryPartitioned', () => {
+  it('true when primary is alive but isolated from both secondaries', () => {
+    ctx.state.links.ps1 = false;
+    ctx.state.links.ps2 = false;
+    assert.equal(ctx.isPrimaryPartitioned(), true);
+  });
+
+  it('false when any primary-to-secondary link is up', () => {
+    ctx.state.links.ps1 = false;
+    // ps2 still up
+    assert.equal(ctx.isPrimaryPartitioned(), false);
+  });
+
+  it('false when primary is dead (not partitioned, just down)', () => {
+    ctx.state.nodes.primary.alive = false;
+    ctx.state.links.ps1 = false;
+    ctx.state.links.ps2 = false;
+    assert.equal(ctx.isPrimaryPartitioned(), false);
+  });
+});
+
+// ─── effectiveWriteTarget ───────────────────────────────────────────────────
+
+describe('effectiveWriteTarget', () => {
+  it('returns primaryKey by default', () => {
+    assert.equal(ctx.effectiveWriteTarget(), 'primary');
+  });
+
+  it('follows primaryKey after election', () => {
+    ctx.state.primaryKey = 's1';
+    assert.equal(ctx.effectiveWriteTarget(), 's1');
+  });
+
+  it('returns writeClient.targetNode when set', () => {
+    ctx.state.writeClient.targetNode = 's2';
+    assert.equal(ctx.effectiveWriteTarget(), 's2');
+  });
+
+  it('overrides primaryKey when targetNode is set', () => {
+    ctx.state.primaryKey = 's1';
+    ctx.state.writeClient.targetNode = 'primary';
+    assert.equal(ctx.effectiveWriteTarget(), 'primary');
+  });
+});
+
+// ─── resolveReadTarget with manual targeting ────────────────────────────────
+
+describe('resolveReadTarget — manual targeting', () => {
+  it('returns targetNode when set, ignoring readPreference', () => {
+    ctx.state.readClient.targetNode = 's1';
+    assert.equal(ctx.resolveReadTarget('local', 'primary'), 's1');
+  });
+
+  it('returns targetNode even for linearizable', () => {
+    ctx.state.readClient.targetNode = 's2';
+    assert.equal(ctx.resolveReadTarget('linearizable', 'primary'), 's2');
+  });
+
+  it('falls back to normal logic when targetNode is null', () => {
+    ctx.state.readClient.targetNode = null;
+    assert.equal(ctx.resolveReadTarget('local', 'primary'), 'primary');
+  });
+});
+
+// ─── isNodeIsolated ─────────────────────────────────────────────────────────
+
+describe('isNodeIsolated', () => {
+  it('returns false for the primary', () => {
+    assert.equal(ctx.isNodeIsolated('primary'), false);
+  });
+
+  it('returns false for a secondary connected to primary', () => {
+    assert.equal(ctx.isNodeIsolated('s1'), false);
+  });
+
+  it('returns true for a secondary with all links to primary down', () => {
+    ctx.state.links.ps1 = false;
+    ctx.state.links.s1s2 = false;
+    assert.equal(ctx.isNodeIsolated('s1'), true);
+  });
+
+  it('returns false for dead nodes', () => {
+    ctx.state.nodes.s1.alive = false;
+    ctx.state.links.ps1 = false;
+    assert.equal(ctx.isNodeIsolated('s1'), false);
+  });
+
+  it('isolated when direct link to primary is cut even if s1s2 heartbeat is up', () => {
+    // s1 has no direct link to primary — s1s2 is heartbeat-only, no chained replication
+    ctx.state.links.ps1 = false;
+    assert.equal(ctx.isNodeIsolated('s1'), true);
+  });
+
+  it('isolated when ps2 cut even though s2 could reach primary via s1 (no chained replication)', () => {
+    // Old (wrong) behavior was false — transitive BFS through s1s2 found a path.
+    // Correct behavior: no direct link to primary → isolated.
+    ctx.state.links.ps2 = false;
+    assert.equal(ctx.isNodeIsolated('s2'), true);
+  });
+
+  it('detects isolation when both primary links are down', () => {
+    ctx.state.links.ps1 = false;
+    ctx.state.links.ps2 = false;
+    // Both secondaries are isolated from primary
+    assert.equal(ctx.isNodeIsolated('s1'), true);
+    assert.equal(ctx.isNodeIsolated('s2'), true);
+  });
+});

@@ -113,6 +113,39 @@ describe('rc:majority — reads majorityCommitId', () => {
 
     assert.ok(titles.some(t => t.includes('frozen')), `should detect frozen: ${titles.join(' | ')}`);
   });
+
+  it('does not freeze rc:majority when write client targets isolated node but cluster has majority', async () => {
+    await writeV1();
+    // Simulate post-election: old primary slot isolated at v1; s2 is primary with s1 at v2; mc advanced.
+    s().primaryKey = 's2';
+    s().nodes.s1.memoryVersion = 2;
+    s().nodes.s1.journalVersion = 2;
+    s().nodes.s2.memoryVersion = 2;
+    s().nodes.s2.journalVersion = 2;
+    s().nodes.primary.memoryVersion = 1;
+    s().nodes.primary.journalVersion = 1;
+    s().doc.latestId = 2;
+    s().doc.majorityCommitId = 2;
+    s().doc.versions.push({ id: 2, op: 'update', ackedBy: new Set(['s1', 's2']) });
+    s().links.ps1 = false;
+    s().links.ps2 = false;
+    s().links.s1s2 = true;
+    s().writeClient.targetNode = 'primary';
+    s().readClient.targetNode = 'primary';
+    s().writeClient.phase = 'idle';
+    s().readClient.phase = 'idle';
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+
+    const steps = readSteps('majority', 'primary');
+    const titles = await runSteps(steps);
+
+    assert.equal(s().readClient.lastReceivedVersion.id, 1,
+      'isolated lagging node min(mc, memory) — must not serve v2');
+    assert.equal(s().readClient.lastReceivedVersion.dirty, false);
+    assert.ok(!titles.some(t => /frozen/i.test(t)),
+      'cluster still has majority — should not take frozen read path');
+    assert.ok(titles.some(t => t.includes('v1')));
+  });
 });
 
 // ─── rc:linearizable ────────────────────────────────────────────────────────

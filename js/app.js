@@ -189,6 +189,7 @@ function resetReadVisual(opts = {}) {
   const clearSession = opts.clearSession !== false;
   state.particles = [];
   state.readClient.phase = 'idle';
+  state.readClient.errorReason = null;
   if (clearSession) {
     state.readClient.sessionActive = false;
     state.readClient.sessionSnapshotId = null;
@@ -218,25 +219,130 @@ function handleElection() {
   runMachine(arrayMachine(buildElectionSteps()), electionEngine, 'write-step-panel');
 }
 
+function handleForceElection() {
+  if (electionEngine.busy || (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted)) return;
+  resetElectionVisual();
+  resetWriteVisual();
+  resetReadVisual();
+  draw();
+  log('\u2500\u2500\u2500 Force Election (partition detected) \u2500\u2500\u2500', 'warn');
+  runMachine(arrayMachine(buildElectionSteps({ forcePartition: true })), electionEngine, 'write-step-panel');
+}
+
+// Called when any link is restored. Since the simulator uses instant step-down
+// (no stale-primary writes), there's nothing to roll back — just cap
+// reconnected node versions to the majority-committed level.
+function checkPartitionHealed() {
+  const pk = state.primaryKey;
+  const priPartition = getPartition(pk);
+  let healed = false;
+  for (const [k, n] of Object.entries(state.nodes)) {
+    if (k === pk || !n.alive) continue;
+    if (priPartition.has(k)) {
+      // Node is connected to primary now — cap its data to majority-committed
+      n.memoryVersion  = Math.min(n.memoryVersion  || 0, state.doc.majorityCommitId);
+      n.journalVersion = Math.min(n.journalVersion || 0, state.doc.majorityCommitId);
+      healed = true;
+    }
+  }
+  if (healed) {
+    state.writeClient.phase = 'idle';
+    Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    log(`Partition healed \u2014 isolated node(s) rejoined. ${state.nodes[pk].label} remains primary.`, 'ok');
+    draw();
+    syncButtons();
+  }
+}
+
 function resetScenario() {
   resetWriteVisual();
   resetReadVisual();
   resetElectionVisual();
   resetDoc();
   resetLinks();
+  resetClientDrag();
+  state.writeClient.targetNode = null;
+  state.readClient.targetNode = null;
   Object.values(state.nodes).forEach(n => { n.alive = true; n.phase = 'idle'; });
+  // Safe to clear aborted now — all engines are fully torn down, no async loop running.
+  writeEngine.aborted = false;
+  readEngine.aborted = false;
+  electionEngine.aborted = false;
+  computeLayout(canvasW, canvasH);
   draw();
   syncButtons();
   log('Scenario reset — all nodes healthy, all links connected, document cleared.', 'info');
 }
 
 // ═══════════════════════════════════════
-// CANVAS INTERACTION (node/link toggle)
+// CANVAS TOOLTIPS (native title attribute based on hover target)
 // ═══════════════════════════════════════
-canvas.addEventListener('click', e => {
-  const rect = canvas.getBoundingClientRect();
-  const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+function canvasTipFor(hit) {
+  if (!hit) return '';
+  const tips = TEXTS.canvasTips;
+  if (hit.type === 'node') {
+    const n = state.nodes[hit.key];
+    return tips.node(n.label, n.alive);
+  }
+  if (hit.type === 'link') {
+    const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
+    const pair = pairMap[hit.key];
+    if (!pair) return '';
+    const labelA = state.nodes[pair[0]].label;
+    const labelB = state.nodes[pair[1]].label;
+    const linked = state.links[hit.key];
+    const isSecSec = pair[0] !== state.primaryKey && pair[1] !== state.primaryKey;
+    return isSecSec ? tips.linkSecSec(labelA, labelB, linked) : tips.link(labelA, labelB, linked);
+  }
+  if (hit.type === 'client') {
+    const client = hit.key === 'write' ? state.writeClient : state.readClient;
+    const nodeKeys = [null, ...Object.keys(state.nodes)];
+    const idx = nodeKeys.indexOf(client.targetNode);
+    const nextKey = nodeKeys[(idx + 1) % nodeKeys.length];
+    const nextLabel = nextKey ? state.nodes[nextKey].label : 'auto';
+    const currentLabel = client.targetNode ? state.nodes[client.targetNode].label : 'auto';
+    const targetStr = `current = ${currentLabel}, next click = ${nextLabel}`;
+    return hit.key === 'write' ? tips.clientWrite(targetStr) : tips.clientRead(targetStr);
+  }
+  if (hit.type === 'clientLink') {
+    return tips.clientLink(hit.key, state.links[hit.key]);
+  }
+  if (hit.type === 'lockBanner') {
+    return tips.lockBanner;
+  }
+  return '';
+}
+
+// ═══════════════════════════════════════
+// CLIENT TARGETING (click client circle to cycle target node)
+// ═══════════════════════════════════════
+function cycleClientTarget(clientKey) {
+  const nodeKeys = [null, ...Object.keys(state.nodes)]; // null = auto
+  const client = clientKey === 'write' ? state.writeClient : state.readClient;
+  const current = client.targetNode;
+  const idx = nodeKeys.indexOf(current);
+  client.targetNode = nodeKeys[(idx + 1) % nodeKeys.length];
+  const label = client.targetNode ? state.nodes[client.targetNode].label : 'auto';
+  log(`${clientKey === 'write' ? 'Writer' : 'Reader'} target: ${label}`, 'info');
+  draw(); syncButtons();
+}
+
+// ═══════════════════════════════════════
+// CANVAS INTERACTION (node/link toggle + client drag)
+// ═══════════════════════════════════════
+let dragging = null; // { key: 'write'|'read', offsetX, offsetY }
+
+function isAnyEngineActive() {
+  return [writeEngine, readEngine, electionEngine].some(
+    e => (e.idx !== -1 && !e.done && !e.aborted) || e.busy
+  );
+}
+
+function handleCanvasClick(hit) {
   if (!hit) return;
+
+  // Topology is locked while any operation is in flight
+  if (isAnyEngineActive() && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return;
 
   if (hit.type === 'node') {
     const n = state.nodes[hit.key];
@@ -262,11 +368,18 @@ canvas.addEventListener('click', e => {
     resetReadVisual();
     if (!electionEngine.done) resetElectionVisual();
   } else if (hit.type === 'link') {
-    const lk = getLinkBetween(state.primaryKey, hit.key);
-    if (lk) {
+    const lk = hit.key;
+    if (lk && state.links[lk] !== undefined) {
       state.links[lk] = !state.links[lk];
-      const label = `${state.nodes[state.primaryKey].label} \u2194 ${state.nodes[hit.key].label}`;
+      const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
+      const pair = pairMap[lk];
+      const label = pair ? `${state.nodes[pair[0]].label} \u2194 ${state.nodes[pair[1]].label}` : lk;
       log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} \u2014 document state preserved.`, state.links[lk] ? 'ok' : 'warn');
+
+      if (state.links[lk]) {
+        checkPartitionHealed();
+      }
+
       const writeActive = writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted;
       if (!writeActive) resetWriteVisual();
       resetReadVisual();
@@ -293,18 +406,74 @@ canvas.addEventListener('click', e => {
   }
 
   draw(); syncButtons();
+}
+
+canvas.addEventListener('mousedown', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  const hit = hitTest(mx, my);
+  if (hit && hit.type === 'client') {
+    const c = hit.key === 'write' ? state.writeClient : state.readClient;
+    dragging = { key: hit.key, offsetX: mx - c.x, offsetY: my - c.y, moved: false };
+    canvas.style.cursor = 'grabbing';
+    e.preventDefault();
+  }
 });
 
 canvas.addEventListener('mousemove', e => {
   const rect = canvas.getBoundingClientRect();
-  const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
-  canvas.style.cursor = hit ? 'pointer' : 'default';
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+  if (dragging) {
+    const c = dragging.key === 'write' ? state.writeClient : state.readClient;
+    c.x = Math.max(CR, Math.min(canvasW - CR, mx - dragging.offsetX));
+    c.y = Math.max(CR, Math.min(canvasH - CR, my - dragging.offsetY));
+    clientDragged[dragging.key] = true;
+    dragging.moved = true;
+    canvas.style.cursor = 'grabbing';
+    draw();
+    return;
+  }
+
+  const hit = hitTest(mx, my);
+  const locked = isAnyEngineActive();
+  if (hit && hit.type === 'client') {
+    canvas.style.cursor = 'grab';
+  } else if (locked && hit && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) {
+    canvas.style.cursor = 'not-allowed';
+  } else if (hit && hit.type === 'lockBanner') {
+    canvas.style.cursor = 'help';
+  } else {
+    canvas.style.cursor = hit ? 'pointer' : 'default';
+  }
   const prev = getHoverTarget();
   const changed = (prev?.type !== hit?.type || prev?.key !== hit?.key);
-  if (changed) { setHoverTarget(hit); draw(); }
+  if (changed) {
+    setHoverTarget(hit);
+    canvas.title = canvasTipFor(hit);
+    draw();
+  }
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (dragging) {
+    const wasDrag = dragging.moved;
+    const key = dragging.key;
+    dragging = null;
+    canvas.style.cursor = 'grab';
+    if (!wasDrag && !isAnyEngineActive()) {
+      cycleClientTarget(key);
+    }
+    return;
+  }
+  // Regular click (non-drag) — handle node/link/clientLink actions
+  const rect = canvas.getBoundingClientRect();
+  const hit = hitTest(e.clientX - rect.left, e.clientY - rect.top);
+  handleCanvasClick(hit);
 });
 
 canvas.addEventListener('mouseleave', () => {
+  if (dragging) { dragging = null; }
   if (getHoverTarget()) { setHoverTarget(null); draw(); }
 });
 
@@ -342,6 +511,14 @@ document.getElementById('btn-read-session-end').addEventListener('click', handle
 document.getElementById('btn-read-next').addEventListener('click', advanceReadStep);
 document.getElementById('btn-read-finish').addEventListener('click', autoFinishRead);
 document.getElementById('btn-canvas-election').addEventListener('click', handleElection);
+document.getElementById('btn-canvas-force-election')?.addEventListener('click', handleForceElection);
+document.getElementById('btn-canvas-reset-ui')?.addEventListener('click', () => {
+  resetClientDrag();
+  state.writeClient.targetNode = null;
+  state.readClient.targetNode = null;
+  computeLayout(canvasW, canvasH);
+  draw();
+});
 document.getElementById('btn-clear-log').addEventListener('click', () => { document.getElementById('log').innerHTML = ''; });
 document.getElementById('btn-dismiss-mobile').addEventListener('click', dismissMobilePopup);
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleTheme);
@@ -361,6 +538,58 @@ function initPopups() {
 }
 
 // ═══════════════════════════════════════
+// SCENARIO PANEL
+// ═══════════════════════════════════════
+function applyScenario(scenario) {
+  resetScenario();
+  const s = scenario.setup;
+  document.getElementById('sel-w').value = s.w;
+  document.getElementById('sel-j').value = s.j;
+  document.getElementById('sel-rc').value = s.rc;
+  document.getElementById('sel-readpref').value = s.readPref;
+  if (s.links) {
+    Object.entries(s.links).forEach(([k, v]) => { state.links[k] = v; });
+  }
+  syncWBadge();
+  syncTooltips();
+  updateReadActionControls();
+  draw();
+  syncButtons();
+  log(`\u2500\u2500\u2500 Scenario: ${scenario.name} \u2500\u2500\u2500`, 'info');
+  log(scenario.next, 'info');
+}
+
+function initScenarios() {
+  const container = document.getElementById('scenarios-list');
+  if (!container) return;
+  container.innerHTML = '';
+  let grid;
+  TEXTS.scenarios.forEach(entry => {
+    if (entry.group) {
+      const hdr = document.createElement('div');
+      hdr.className = 'scenario-group-hdr';
+      hdr.innerHTML =
+        `<div class="scenario-group-title">${entry.group}</div>` +
+        `<div class="scenario-group-sub">${entry.subtitle}</div>`;
+      container.appendChild(hdr);
+      grid = document.createElement('div');
+      grid.className = 'scenario-grid';
+      container.appendChild(grid);
+      return;
+    }
+    const item = document.createElement('div');
+    item.className = 'scenario-item';
+    item.innerHTML =
+      `<div class="scenario-name">${entry.name}</div>` +
+      `<div class="scenario-what">${entry.what}</div>` +
+      `<div class="scenario-next">\u25B6 ${entry.next}</div>` +
+      `<button class="sec scenario-btn">Set up</button>`;
+    item.querySelector('.scenario-btn').addEventListener('click', () => applyScenario(entry));
+    (grid || container).appendChild(item);
+  });
+}
+
+// ═══════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════
 resizeCanvas();
@@ -371,4 +600,5 @@ syncWBadge();
 initButtonTips();
 syncTooltips();
 initPopups();
+initScenarios();
 log('Ready — click nodes/links to set topology, click client arrows to interrupt connections.', 'info');

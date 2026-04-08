@@ -12,9 +12,9 @@ function canAchieve(w) {
 // ═══════════════════════════════════════
 // WRITE STATE MACHINE (lazy step generator)
 // ═══════════════════════════════════════
-// Instead of pre-building a fixed step array, the machine evaluates the live
-// topology to decide the next step.  When a node crashes mid-replication the
-// machine re-targets remaining alive secondaries automatically.
+// The machine evaluates the topology at each step to decide the next action.
+// Topology is locked during execution (UI blocks node/link clicks while any
+// engine is active), so the machine can assume stable topology throughout.
 
 function createWriteMachine(wOrig, j) {
   let w = wOrig;
@@ -33,28 +33,13 @@ function createWriteMachine(wOrig, j) {
   const isDefault = w === 'majority';
   const defaultNote = TEXTS.defaultNote;
 
-  // Machine state — mutated as steps execute
-  //   All paths: send → primaryMem → primaryJournal → repl → done
-  //   (w:0 branches to fireForget after primaryJournal)
   let phase          = 'send';
-  const replicated   = new Set();   // secondaries with both mem+journal done
-  const memApplied   = new Set();   // secondaries with mem done, awaiting journal
-  let pendingJournal = null;        // secondary whose journal step is next
+  const replicated   = new Set();
+  const memApplied   = new Set();
+  let pendingJournal = null;
   let acked          = false;
 
   const history = [];
-
-  // ── Centralized invariant checks ──────────────────────────────────
-  // Single source of truth for "can the write continue?" — covers both
-  // primary-dead and primary-bounced-but-lost-data scenarios.
-
-  function primaryAlive() { return state.nodes[state.primaryKey].alive; }
-
-  function primaryHasData() {
-    return state.nodes[state.primaryKey].memoryVersion >= nextId;
-  }
-
-  function primaryCanServe() { return primaryAlive() && primaryHasData(); }
 
   function failWrite(title, explain) {
     phase = 'done';
@@ -75,81 +60,6 @@ function createWriteMachine(wOrig, j) {
     return s;
   }
 
-  function endAsyncWork(title, explain) {
-    phase = 'done';
-    const s = {
-      title,
-      explain,
-      run: async () => {
-        Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
-        log(title, 'warn');
-        draw();
-      },
-    };
-    history.push(s);
-    return s;
-  }
-
-  function primaryUnavailableStep() {
-    const pNode = state.nodes[state.primaryKey];
-    const isAlive     = pNode.alive;
-    const journalSafe = pNode.journalVersion >= nextId;
-    const hasData     = pNode.memoryVersion >= nextId;
-
-    if (!isAlive) {
-      if (phase === 'primaryMem') {
-        const t = TEXTS.write.primaryDown;
-        return failWrite(t.title, t.explain);
-      }
-      if (phase === 'primaryJournal' || (phase === 'repl' && !journalSafe)) {
-        const t = TEXTS.write.primaryCrashedUnjournaled(opLabel, isDefault, defaultNote);
-        return failWrite(t.title, t.explain);
-      }
-      const t = TEXTS.write.primaryCrashedJournaled(opLabel);
-      return failWrite(t.title, t.explain);
-    }
-
-    if (!hasData) {
-      if (!acked) {
-        const t = TEXTS.write.primaryBouncedUnjournaled(opLabel, isDefault, defaultNote);
-        return failWrite(t.title, t.explain);
-      }
-      const t = TEXTS.write.primaryBouncedAfterAck(opLabel, isDefault, defaultNote);
-      return endAsyncWork(t.title, t.explain);
-    }
-
-    return null;
-  }
-
-  function _guardAbort() {
-    if (!acked) {
-      const idx = state.doc.versions.findIndex(v => v.id === nextId);
-      if (idx >= 0) state.doc.versions.splice(idx, 1);
-      if (state.doc.latestId >= nextId) state.doc.latestId = nextId - 1;
-      state.writeClient.phase = 'error';
-    } else {
-      Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
-    }
-    log(`Primary unavailable \u2014 step aborted.`, 'err');
-    draw();
-  }
-
-  // Full guard: primary must be alive AND still hold the write data.
-  function guardRun(fn) {
-    return async () => {
-      if (!primaryCanServe()) { _guardAbort(); return; }
-      await fn();
-    };
-  }
-
-  // Light guard for primaryMem step: data hasn't been applied yet, only check alive.
-  function guardRunAlive(fn) {
-    return async () => {
-      if (!primaryAlive()) { _guardAbort(); return; }
-      await fn();
-    };
-  }
-
   function ackCount() {
     const entry = state.doc.versions.find(v => v.id === nextId);
     return entry ? entry.ackedBy.size : 0;
@@ -158,9 +68,9 @@ function createWriteMachine(wOrig, j) {
   function isWcSatisfied() { return ackCount() >= needCount; }
 
   function eligibleSecs() {
-    const pk = state.primaryKey;
+    const wt = effectiveWriteTarget();
     return Object.keys(state.nodes).filter(k =>
-      k !== pk && state.nodes[k].alive && isReachableForWrite(k) &&
+      k !== wt && state.nodes[k].alive && isReachableForWrite(k) &&
       !replicated.has(k) && !memApplied.has(k) && k !== pendingJournal
     );
   }
@@ -174,14 +84,8 @@ function createWriteMachine(wOrig, j) {
       title: t.title,
       serverSide: true,
       explain: t.explain,
-      run: guardRun(async () => {
-        if (!state.nodes[k].alive || !isReachableForWrite(k)) {
-          log(`${label} no longer reachable — skipping memory apply.`, 'warn');
-          memApplied.delete(k);
-          if (pendingJournal === k) pendingJournal = null;
-          draw(); return;
-        }
-        await awaitParticle(state.nodes[state.primaryKey], state.nodes[k], T.flowRepl, 'v' + nextId, () => {
+      run: async () => {
+        await awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], T.flowRepl, 'v' + nextId, () => {
           state.nodes[k].memoryVersion = nextId;
           if (!ackNeedsJournal) {
             const entry = state.doc.versions.find(v => v.id === nextId);
@@ -192,7 +96,7 @@ function createWriteMachine(wOrig, j) {
           log(`${label}: v${nextId} in memory.`, 'info');
         });
         draw();
-      }),
+      },
     };
   }
 
@@ -203,12 +107,7 @@ function createWriteMachine(wOrig, j) {
       title: t.title,
       serverSide: true,
       explain: t.explain,
-      run: guardRun(async () => {
-        if (!state.nodes[k].alive) {
-          log(`${label} crashed — skipping journal flush.`, 'warn');
-          replicated.delete(k);
-          draw(); return;
-        }
+      run: async () => {
         journalFlush(k);
         if (ackNeedsJournal) {
           const entry = state.doc.versions.find(v => v.id === nextId);
@@ -216,13 +115,13 @@ function createWriteMachine(wOrig, j) {
           advanceMajorityCommit();
         }
         state.nodes[k].phase = 'acked';
-        log(`${label}: journal flushed — v${nextId} crash-safe.`, 'ok');
+        log(`${label}: journal flushed \u2014 v${nextId} crash-safe.`, 'ok');
         draw();
-      }),
+      },
     };
   }
 
-  const secKeys = Object.keys(state.nodes).filter(k => k !== state.primaryKey);
+  const secKeys = Object.keys(state.nodes).filter(k => k !== effectiveWriteTarget());
   const totalSecs = secKeys.length;
 
   return {
@@ -237,20 +136,27 @@ function createWriteMachine(wOrig, j) {
     nextStep() {
       if (phase === 'done') return null;
 
-      // ── Universal invariant: primary must be alive and hold the write data ──
-      // At primaryMem, data hasn't been applied yet — only check liveness.
-      // From primaryJournal/repl onward, also verify the data survived.
-      if (phase === 'primaryMem' && !primaryAlive()) {
-        return primaryUnavailableStep();
-      }
-      if (phase !== 'send' && phase !== 'primaryMem' && !primaryCanServe()) {
-        const step = primaryUnavailableStep();
-        if (step) return step;
-      }
-
       if (phase === 'send' && !state.links.wp) {
         const t = TEXTS.write.writerDisconnected;
         return failWrite(t.title, t.explain);
+      }
+
+      if (phase === 'send' && effectiveWriteTarget() !== state.primaryKey) {
+        const targetLabel = state.nodes[effectiveWriteTarget()].label;
+        return failWrite(
+          `Not primary \u2014 ${targetLabel} cannot accept writes`,
+          `<strong>MongoDB error: NotWritablePrimary.</strong> The write client is targeting <em>${targetLabel}</em>, ` +
+          `which is a secondary. Only the primary can accept write operations. ` +
+          `The driver would normally discover the primary automatically, but in this simulation the target was set manually.`
+        );
+      }
+
+      if (phase === 'send' && !state.nodes[effectiveWriteTarget()].alive) {
+        return failWrite(
+          `Target node is down \u2014 cannot deliver write`,
+          `The write client is targeting <em>${state.nodes[effectiveWriteTarget()].label}</em>, which is currently down. ` +
+          `No write can be delivered.`
+        );
       }
 
       if (phase === 'send') {
@@ -264,8 +170,8 @@ function createWriteMachine(wOrig, j) {
             state.doc.versions.push(entry);
             state.doc.latestId = nextId;
             state.writeClient.lastWrittenVersion = nextId;
-            return awaitParticle(state.writeClient, state.nodes[state.primaryKey], T.flowWrite, op === 'insert' ? 'INS' : 'UPD', () => {
-              state.nodes[state.primaryKey].phase = 'active';
+            return awaitParticle(state.writeClient, state.nodes[effectiveWriteTarget()], T.flowWrite, op === 'insert' ? 'INS' : 'UPD', () => {
+              state.nodes[effectiveWriteTarget()].phase = 'active';
               state.writeClient.phase = 'waiting';
               log(`Write received by primary (${opLabel}).`, 'info');
             });
@@ -281,17 +187,18 @@ function createWriteMachine(wOrig, j) {
           title: t.title,
           serverSide: true,
           explain: t.explain,
-          run: guardRunAlive(async () => {
-            state.nodes[state.primaryKey].memoryVersion = nextId;
+          run: async () => {
+            const wt = effectiveWriteTarget();
+            state.nodes[wt].memoryVersion = nextId;
             if (!ackNeedsJournal) {
               const entry = state.doc.versions.find(v => v.id === nextId);
-              if (entry) { entry.ackedBy.add(state.primaryKey); }
+              if (entry) { entry.ackedBy.add(wt); }
               advanceMajorityCommit();
             }
-            state.nodes[state.primaryKey].phase = 'active';
+            state.nodes[wt].phase = 'active';
             log(`Primary: v${nextId} applied in memory.`, 'info');
             draw();
-          }),
+          },
         };
         history.push(s); return s;
       }
@@ -303,17 +210,18 @@ function createWriteMachine(wOrig, j) {
           title: t.title,
           serverSide: true,
           explain: t.explain,
-          run: guardRun(async () => {
-            journalFlush(state.primaryKey);
+          run: async () => {
+            const wt = effectiveWriteTarget();
+            journalFlush(wt);
             if (ackNeedsJournal) {
               const entry = state.doc.versions.find(v => v.id === nextId);
-              if (entry) { entry.ackedBy.add(state.primaryKey); }
+              if (entry) { entry.ackedBy.add(wt); }
               advanceMajorityCommit();
             }
-            state.nodes[state.primaryKey].phase = w === 0 ? 'acked' : 'active';
-            log(`Primary: journal flushed — v${nextId} crash-safe.`, 'ok');
+            state.nodes[wt].phase = w === 0 ? 'acked' : 'active';
+            log(`Primary: journal flushed \u2014 v${nextId} crash-safe.`, 'ok');
             draw();
-          }),
+          },
         };
         history.push(s); return s;
       }
@@ -327,7 +235,7 @@ function createWriteMachine(wOrig, j) {
           explain: t.explain,
           run: async () => {
             secs.forEach((k, i) => setTimeout(() =>
-              awaitParticle(state.nodes[state.primaryKey], state.nodes[k], T.flowRepl, 'v' + nextId, () => {
+              awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], T.flowRepl, 'v' + nextId, () => {
                 state.nodes[k].memoryVersion = nextId;
                 const entry = state.doc.versions.find(v => v.id === nextId);
                 if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
@@ -336,7 +244,7 @@ function createWriteMachine(wOrig, j) {
               }),
             i * 100));
             startAnimLoop();
-            log(`w:0 — no ACK. ${opLabel} async replication proceeds.`, 'warn');
+            log(`w:0 \u2014 no ACK. ${opLabel} async replication proceeds.`, 'warn');
             state.writeClient.phase = 'idle';
             draw();
           },
@@ -344,37 +252,26 @@ function createWriteMachine(wOrig, j) {
         history.push(s); return s;
       }
 
-      // Replication / ACK / Async loop — the dynamic heart of the machine.
-      // On each call it checks live topology and decides the next action.
-      // (Primary liveness already checked by universal guard above.)
+      // Replication / ACK / Async loop
       if (phase === 'repl') {
 
         // 0. j:false mode: flush journal for the just-applied secondary
-        //    before picking the next one (one at a time, interleaved)
         if (!ackNeedsJournal && memApplied.size > 0) {
           const k = [...memApplied][0];
           memApplied.delete(k);
           replicated.add(k);
-          if (state.nodes[k].alive && isReachableForWrite(k)) {
-            const s = makeJournalStep(k);
-            history.push(s); return s;
-          }
+          const s = makeJournalStep(k);
+          history.push(s); return s;
         }
 
         // 1. Finish pending journal flush (j:true / w:majority)
         if (pendingJournal) {
           const k = pendingJournal;
-          if (!state.nodes[k].alive || !isReachableForWrite(k)) {
-            log(`${state.nodes[k].label} unreachable \u2014 skipping journal flush, will retarget.`, 'warn');
-            memApplied.delete(k);
-            pendingJournal = null;
-          } else {
-            pendingJournal = null;
-            memApplied.delete(k);
-            replicated.add(k);
-            const s = makeJournalStep(k);
-            history.push(s); return s;
-          }
+          pendingJournal = null;
+          memApplied.delete(k);
+          replicated.add(k);
+          const s = makeJournalStep(k);
+          history.push(s); return s;
         }
 
         // 2. Check if write concern is now satisfied \u2192 ACK
@@ -384,13 +281,13 @@ function createWriteMachine(wOrig, j) {
           const s = {
             title: t.title,
             explain: t.explain,
-            run: guardRun(async () => {
-              state.nodes[state.primaryKey].phase = 'acked';
-              await awaitParticle(state.nodes[state.primaryKey], state.writeClient, T.flowAck, 'ACK', () => {
+            run: async () => {
+              state.nodes[effectiveWriteTarget()].phase = 'acked';
+              await awaitParticle(state.nodes[effectiveWriteTarget()], state.writeClient, T.flowAck, 'ACK', () => {
                 state.writeClient.phase = 'received';
               });
-              log(`ACK — w:${w}${j ? ', j:true' : ''} satisfied. ${opLabel} done.`, 'ok');
-            }),
+              log(`ACK \u2014 w:${w}${j ? ', j:true' : ''} satisfied. ${opLabel} done.`, 'ok');
+            },
           };
           history.push(s); return s;
         }
@@ -414,12 +311,13 @@ function createWriteMachine(wOrig, j) {
             explain: t.explain,
             run: async () => {
               await delay(600);
-              if (state.nodes[state.primaryKey].alive) {
-                state.nodes[state.primaryKey].phase = 'error';
+              const wt = effectiveWriteTarget();
+              if (state.nodes[wt].alive) {
+                state.nodes[wt].phase = 'error';
               }
               state.writeClient.phase = 'error';
-              if (state.nodes[state.primaryKey].alive) {
-                await awaitParticle(state.nodes[state.primaryKey], state.writeClient, T.flowErr, 'ERR', () => {});
+              if (state.nodes[wt].alive) {
+                await awaitParticle(state.nodes[wt], state.writeClient, T.flowErr, 'ERR', () => {});
               }
               log(`Write concern error \u2014 w:${w} unachievable. ${opLabel} sits on primary.`, 'err');
             },
@@ -467,8 +365,11 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
 
   const targetKey  = resolveReadTarget(rc, readPref);
   const target     = targetKey ? state.nodes[targetKey] : null;
-  const reachableCount = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
-  const majorityOk = reachableCount >= 2;
+  const pk = state.primaryKey;
+  const majorityOk = state.nodes[pk].alive && !isPrimaryPartitioned();
+  const frozenExplainCount = state.nodes[pk].alive
+    ? getPartition(pk).size
+    : Object.keys(state.nodes).filter(k => state.nodes[k].alive).length;
 
   const served = (rc === 'snapshot' && snapshotOverrideId !== null)
     ? { id: snapshotOverrideId, dirty: false }
@@ -529,13 +430,20 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
 
   } else if (rc === 'majority') {
     if (!majorityOk) {
-      const tFroz = TEXTS.read.majorityFrozen(reachableCount);
+      const tFroz = TEXTS.read.majorityFrozen(frozenExplainCount);
+      const frozenId = Math.min(
+        state.doc.majorityCommitId,
+        target ? (target.memoryVersion || 0) : 0
+      );
+      const frozenLabel = frozenId > 0 ? `v${frozenId}` : 'none';
       steps.push({
         title: tFroz.title,
         explain: tFroz.explain,
-        run: async () => { log(`rc:majority \u2014 majority-commit frozen at v${state.doc.majorityCommitId}.`, 'warn'); draw(); },
+        run: async () => {
+          log(`rc:majority \u2014 majority-commit frozen at v${state.doc.majorityCommitId} (return caps at v${frozenId}).`, 'warn');
+          draw();
+        },
       });
-      const frozenLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
       const tFrozRet = TEXTS.read.majorityFrozenReturn(frozenLabel);
       steps.push({
         title: tFrozRet.title,
@@ -543,7 +451,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         run: async () => {
           await awaitParticle(target, state.readClient, T.flowWrite, frozenLabel, () => {
             state.readClient.phase = 'received';
-            state.readClient.lastReceivedVersion = { id: state.doc.majorityCommitId, dirty: false };
+            state.readClient.lastReceivedVersion = { id: frozenId, dirty: false };
           });
           log(`Read returned frozen majority snapshot: ${frozenLabel}. Stale but safe from rollback.`, 'warn');
         },
@@ -551,21 +459,19 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
       return steps;
     }
     const mcLabel = state.doc.majorityCommitId > 0 ? `v${state.doc.majorityCommitId}` : 'none';
-    const tMaj = TEXTS.read.majorityRead(mcLabel, targetKey, state.primaryKey);
+    const lagNote = vLabel !== mcLabel ? mcLabel : undefined;
+    const tMaj = TEXTS.read.majorityRead(vLabel, targetKey, state.primaryKey, lagNote);
     steps.push({
       title: tMaj.title,
       explain: tMaj.explain,
       run: async () => {
         await delay(350);
-        log(`${target.label}: reading majority-commit snapshot (${mcLabel}).`, 'info');
+        log(`${target.label}: reading majority-commit snapshot (${vLabel}).`, 'info');
         draw();
       },
     });
 
   } else if (rc === 'linearizable') {
-    // Both steps evaluate topology at RUNTIME, not build time.
-    // This ensures that if a secondary goes down between step-build and execution,
-    // the leadership check correctly detects it.
     steps.push({
       ...TEXTS.read.linearizableCheck,
       run: async () => {
@@ -588,6 +494,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
         const runtimeReachable = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
         if (runtimeReachable < 2) {
           state.readClient.phase = 'error';
+          state.readClient.errorReason = 'linearizable';
           log('rc:linearizable blocked \u2014 primary cannot confirm leadership.', 'err'); draw();
           return;
         }
@@ -613,10 +520,11 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
 
   // ── Data return step ──
   if (rc === 'linearizable') {
-    // Linearizable: compute served value at RUNTIME so it reflects the latest
-    // majority-commit point at the moment the read actually executes.
+    const linSuccess = TEXTS.read.linearizableReturn;
+    const linBlocked = TEXTS.read.linearizableBlocked;
     steps.push({
-      ...TEXTS.read.linearizableReturn,
+      get title()   { return state.readClient.phase === 'error' ? linBlocked.title   : linSuccess.title; },
+      get explain() { return state.readClient.phase === 'error' ? linBlocked.explain : linSuccess.explain; },
       run: async () => {
         if (state.readClient.phase === 'error') return;
         const rServed = getServedVersion(targetKey, rc);
@@ -654,19 +562,40 @@ function readPrefLabel(p) {
 // ═══════════════════════════════════════
 // BUILD ELECTION STEPS
 // ═══════════════════════════════════════
-function buildElectionSteps() {
+function buildElectionSteps(opts) {
+  const forcePartition = opts && opts.forcePartition;
   const pk = state.primaryKey;
-  const candidates = Object.keys(state.nodes)
-    .filter(k => k !== pk && state.nodes[k].alive)
-    .sort((a, b) => (state.nodes[b].memoryVersion || 0) - (state.nodes[a].memoryVersion || 0));
-
-  const totalAlive = Object.values(state.nodes).filter(n => n.alive).length;
   const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
+
+  let candidates;
+  if (forcePartition) {
+    const secKeys = Object.keys(state.nodes).filter(k => k !== pk && state.nodes[k].alive);
+    if (secKeys.length > 0) {
+      const secPartition = getPartition(secKeys[0]);
+      secPartition.delete(pk);
+      if (secPartition.size >= majorityNeeded) {
+        candidates = [...secPartition]
+          .sort((a, b) => (state.nodes[b].memoryVersion || 0) - (state.nodes[a].memoryVersion || 0));
+      } else {
+        candidates = [];
+      }
+    } else {
+      candidates = [];
+    }
+  } else {
+    candidates = Object.keys(state.nodes)
+      .filter(k => k !== pk && state.nodes[k].alive)
+      .sort((a, b) => (state.nodes[b].memoryVersion || 0) - (state.nodes[a].memoryVersion || 0));
+  }
+
+  const totalAlive = forcePartition
+    ? candidates.length
+    : Object.values(state.nodes).filter(n => n.alive).length;
 
   if (candidates.length === 0 || totalAlive < majorityNeeded) {
     const reason = candidates.length === 0
-      ? `No alive secondaries available.`
-      : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members alive \u2014 need ${majorityNeeded} (majority) to hold an election.`;
+      ? (forcePartition ? `No reachable secondary partition forms a majority.` : `No alive secondaries available.`)
+      : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members ${forcePartition ? 'in the partition' : 'alive'} \u2014 need ${majorityNeeded} (majority) to hold an election.`;
     const tImp = TEXTS.election.impossible(reason);
     return [{
       title: tImp.title,
@@ -697,10 +626,16 @@ function buildElectionSteps() {
     title: tElected.title,
     explain: tElected.explain,
     run: async () => {
+      const oldPk = pk;
       state.primaryKey = winner;
       const oldLabel = winnerNode.label;
       winnerNode.label = 'Primary';
-      state.nodes[pk].label = oldLabel;
+
+      if (forcePartition) {
+        state.nodes[oldPk].label = oldLabel.replace('Primary', 'Secondary').trim() || oldLabel;
+      } else {
+        state.nodes[oldPk].label = oldLabel;
+      }
 
       state.doc.versions = state.doc.versions.filter(v => v.id <= state.doc.majorityCommitId);
       state.doc.latestId = state.doc.majorityCommitId;
@@ -721,7 +656,11 @@ function buildElectionSteps() {
       if (uncommitted.length > 0) {
         log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} removed from uncommitted nodes.`, 'warn');
       }
-      log(`${oldLabel} is now Primary. Writes can resume.`, 'ok');
+      if (forcePartition) {
+        log(`${oldLabel} is now Primary. Old primary stepped down and is isolated.`, 'warn');
+      } else {
+        log(`${oldLabel} is now Primary. Writes can resume.`, 'ok');
+      }
       draw();
     },
   });
