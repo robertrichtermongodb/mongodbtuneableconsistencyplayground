@@ -5,6 +5,18 @@ const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, b
 const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
 const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
 
+function isAnyEngineActive() {
+  return [writeEngine, readEngine, electionEngine].some(
+    e => (e.idx !== -1 && !e.done && !e.aborted) || e.busy
+  );
+}
+
+// Snapshot sessions persist between read step-runs; topology must stay stable until the session ends
+// (writes are still allowed — the pinned snapshot ID fixes repeatable read semantics).
+function isTopologyLocked() {
+  return isAnyEngineActive() || !!state.readClient.sessionActive;
+}
+
 function abortEngine(eng) {
   eng.aborted = true;
   if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
@@ -24,6 +36,14 @@ function resetEngine(eng) {
   if (eng._autoFinishId) { clearInterval(eng._autoFinishId); eng._autoFinishId = null; }
 }
 
+
+function syncReadSessionBadge() {
+  const el = document.getElementById('read-session-badge');
+  if (!el) return;
+  const on = !!state.readClient.sessionActive;
+  el.textContent = on ? TEXTS.readSessionActiveBadge : '';
+  el.hidden = !on;
+}
 
 function syncButtons() {
   const we = writeEngine, re = readEngine, ee = electionEngine;
@@ -89,8 +109,9 @@ function syncButtons() {
 
   const selRC = document.getElementById('sel-rc');
   const selRP = document.getElementById('sel-readpref');
-  if (selRC) selRC.disabled = readActive;
-  if (selRP) selRP.disabled = readActive;
+  const sessionTopoLock = !!state.readClient.sessionActive;
+  if (selRC) selRC.disabled = readActive || sessionTopoLock;
+  if (selRP) selRP.disabled = readActive || sessionTopoLock;
 
   // ── Canvas election button — contextual overlay near dead primary ──
   const canvasBtnEl = document.getElementById('btn-canvas-election');
@@ -102,7 +123,7 @@ function syncButtons() {
     const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
     const canElect      = aliveCount >= majorityNeeded;
     const hasCandidates = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
-    const show = primaryDown && hasCandidates && canElect && !electionActive && !writeActive;
+    const show = primaryDown && hasCandidates && canElect && !electionActive && !writeActive && !sessionTopoLock;
     canvasBtnEl.style.display = show ? 'block' : 'none';
     if (show) {
       canvasBtnEl.style.left = (14 + pNode.x) + 'px';
@@ -114,7 +135,7 @@ function syncButtons() {
   const forceBtnEl = document.getElementById('btn-canvas-force-election');
   if (forceBtnEl) {
     const partitioned = isPrimaryPartitioned();
-    const showForce = partitioned && !electionActive && !writeActive;
+    const showForce = partitioned && !electionActive && !writeActive && !sessionTopoLock;
     forceBtnEl.style.display = showForce ? 'block' : 'none';
     if (showForce) {
       const s1 = state.nodes.s1, s2 = state.nodes.s2;
@@ -123,6 +144,8 @@ function syncButtons() {
       forceBtnEl.style.transform = 'translateX(-50%)';
     }
   }
+
+  syncReadSessionBadge();
 }
 
 // ── Write panel Next/Finish smart wrappers ──
@@ -207,6 +230,7 @@ function refreshIdlePanels() {
       showIdlePanel(panelId, ids);
     }
   }
+  syncReadSessionBadge();
 }
 
 // Explicit DOM ID map — avoids fragile string-manipulation to derive IDs from panel names.

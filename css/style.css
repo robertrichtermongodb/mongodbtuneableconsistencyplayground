@@ -102,6 +102,9 @@ button.read-btn:disabled { background: var(--border); color: var(--textMuted); }
 .panel-start button { width: 100%; padding: 5px 11px; font-size: 0.78rem; }
 .snapshot-actions { display: none; gap: 6px; flex-wrap: wrap; }
 .snapshot-actions button { flex: 1; min-width: 110px; }
+.snapshot-actions #btn-read-session-start { min-width: 140px; }
+.snapshot-actions #btn-read-session-again,
+.snapshot-actions #btn-read-session-end { min-width: 105px; }
 .step-card { display: block; }
 .step-panels { display: flex; }
 .step-panel { flex: 1; padding: 13px 16px 15px; }
@@ -125,6 +128,22 @@ button.read-btn:disabled { background: var(--border); color: var(--textMuted); }
 .step-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--border); transition: background .2s; }
 .step-dot.done    { background: var(--green); }
 .step-dot.current { background: var(--amber); }
+.read-step-heading { display: flex; align-items: flex-start; gap: 10px; margin-bottom: 4px; flex-wrap: wrap; }
+.read-step-heading .step-title { flex: 1; min-width: 12ch; margin-bottom: 0; }
+.read-session-badge {
+  flex-shrink: 0;
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  color: var(--amber);
+  background: var(--amberDarkBg);
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  padding: 4px 7px;
+  line-height: 1.15;
+  white-space: nowrap;
+  margin-top: 1px;
+}
 .step-title { font-size: 0.97rem; font-weight: 700; color: var(--textBright); margin-bottom: 4px; min-height: 2.6em; line-height: 1.3; }
 .step-explain { font-size: 0.83rem; color: var(--textSecondary); line-height: 1.6; }
 .step-explain strong { color: var(--text); }

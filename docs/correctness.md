@@ -144,9 +144,9 @@ This document separates simulation behaviors into four categories:
 
 **Fix (Iteration 18):** Replaced with `createWriteMachine()` — a lazy step generator with mid-operation liveness guards.
 
-**Superseded (Iteration 19):** Topology is now locked while any engine is active. The UI (`isAnyEngineActive()` in `app.js`) blocks node/link/client-link clicks during operations, so mid-operation topology changes cannot occur. All runtime guard code (`guardRun`, `guardRunAlive`, `primaryUnavailableStep`, `_guardAbort`, `endAsyncWork`) was removed. Users configure topology *before* starting an operation.
+**Superseded (Iteration 19):** Topology is now locked while any engine is active. The UI blocks node/link/client-link clicks during operations, so mid-operation topology changes cannot occur. **Addition:** An open `rc:snapshot` session (`readClient.sessionActive`) also locks topology between read cycles; writes may still run (snapshot pin remains valid).
 
-**File:** `simulation.js` (`createWriteMachine`), `app.js` (`isAnyEngineActive`, `handleCanvasClick`).
+**File:** `simulation.js` (`createWriteMachine`), `engine.js` (`isTopologyLocked`, `isAnyEngineActive`), `app.js` (`handleCanvasClick`).
 
 ---
 

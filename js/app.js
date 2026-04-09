@@ -330,17 +330,11 @@ function cycleClientTarget(clientKey) {
 // ═══════════════════════════════════════
 let dragging = null; // { key: 'write'|'read', offsetX, offsetY }
 
-function isAnyEngineActive() {
-  return [writeEngine, readEngine, electionEngine].some(
-    e => (e.idx !== -1 && !e.done && !e.aborted) || e.busy
-  );
-}
-
 function handleCanvasClick(hit) {
   if (!hit) return;
 
-  // Topology is locked while any operation is in flight
-  if (isAnyEngineActive() && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return;
+  // Topology is locked while any operation is in flight or a snapshot session is open between reads
+  if (isTopologyLocked() && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return;
 
   if (hit.type === 'node') {
     const n = state.nodes[hit.key];
@@ -434,7 +428,7 @@ canvas.addEventListener('mousemove', e => {
   }
 
   const hit = hitTest(mx, my);
-  const locked = isAnyEngineActive();
+  const locked = isTopologyLocked();
   if (hit && hit.type === 'client') {
     canvas.style.cursor = 'grab';
   } else if (locked && hit && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) {
@@ -459,7 +453,7 @@ canvas.addEventListener('mouseup', e => {
     const key = dragging.key;
     dragging = null;
     canvas.style.cursor = 'grab';
-    if (!wasDrag && !isAnyEngineActive()) {
+    if (!wasDrag && !isTopologyLocked()) {
       cycleClientTarget(key);
     }
     return;
@@ -624,7 +618,7 @@ function createDomBadges() {
     'scenarios-details', 'event-log', 'canvas',
     'w-default-pill', 'step-panels-card',
     'write-step-title', 'write-step-explain', 'write-step-badge',
-    'read-step-title', 'read-step-explain', 'read-step-badge',
+    'read-step-title', 'read-session-badge', 'read-step-explain', 'read-step-badge',
     'write-phase-trail',
     'topo-bar', 'topo-hint',
     'session-actions',

@@ -63,12 +63,14 @@ function createContext() {
   // become properties on the context object.  Function declarations and `var`s do.
   // Bridge the key const bindings so tests can reach them via ctx.xxx:
   vm.runInContext(`
-    this.$state          = state;
-    this.$PARTICLE_MS    = PARTICLE_MS;
-    this.$AUTO_STEP_MS   = AUTO_STEP_MS;
-    this.$writeEngine    = writeEngine;
-    this.$readEngine     = readEngine;
-    this.$electionEngine = electionEngine;
+    this.$state            = state;
+    this.$PARTICLE_MS      = PARTICLE_MS;
+    this.$AUTO_STEP_MS     = AUTO_STEP_MS;
+    this.$writeEngine      = writeEngine;
+    this.$readEngine       = readEngine;
+    this.$electionEngine  = electionEngine;
+    this.$isAnyEngineActive = isAnyEngineActive;
+    this.$isTopologyLocked  = isTopologyLocked;
   `, ctx);
 
   // Alias the bridged state as plain `state` for convenience in tests.

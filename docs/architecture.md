@@ -229,7 +229,7 @@ The primary always flushes to journal before any replication begins, regardless 
 
 All write machine references use `effectiveWriteTarget()` instead of `state.primaryKey` directly, enabling writes to a stale primary during split-brain scenarios.
 
-**Topology locking:** The UI (`isAnyEngineActive()` in `app.js`) blocks all node, link, and client-link clicks while any engine is active. This eliminates the need for mid-operation liveness guards (`guardRun`, `guardRunAlive`, `primaryUnavailableStep` — all removed in Iteration 19). Users configure topology *before* starting an operation, then observe the result. The cursor shows `not-allowed` when hovering over locked elements. A canvas banner (`drawLockHint()` in `draw.js`) explains the lock with a hover tooltip describing the complexity rationale.
+**Topology locking:** `isTopologyLocked()` in `engine.js` combines `isAnyEngineActive()` with an open snapshot session (`readClient.sessionActive`). The UI (`handleCanvasClick` in `app.js`) blocks node, link, and client-link clicks while the topology is locked so mid-step state stays explainable. An open snapshot session keeps the lock between read request/response cycles; writes remain allowed (pinned snapshot ID). Read concern/preference dropdowns and canvas election triggers are disabled during a session. This eliminates the need for mid-operation liveness guards (`guardRun`, `guardRunAlive`, `primaryUnavailableStep` — all removed in Iteration 19). The cursor shows `not-allowed` when hovering over locked elements. `drawLockHint()` in `draw.js` shows either an in-flight operation banner or a session-specific banner, with a hover tooltip on the banner describing the rationale.
 
 **Topology-aware messaging:** `createWriteMachine` computes a `topo` context object (reachable count, primaryPartitioned, allHealthy) once at creation. A `topoNote` string is derived from it and appended to key step texts (ACK, replComplete, fireForget) via `TEXTS.topoNote(topo)`. This ensures step explanations reflect the actual topology without adding branching to the state machine.
 
@@ -364,7 +364,7 @@ All via `addEventListener` (no inline `onclick`). Button IDs: `btn-reset`, `btn-
 
 ### Canvas interaction
 
-- **Topology locking:** All node, link, and client-link clicks are blocked (`isAnyEngineActive()` guard in `handleCanvasClick`) while any engine is in-flight. Cursor shows `not-allowed` on hover. Client targeting (`cycleClientTarget`) is also locked. Client dragging (repositioning) remains allowed since it doesn't affect topology.
+- **Topology locking:** All node, link, and client-link clicks are blocked (`isTopologyLocked()` guard in `handleCanvasClick`) while any engine is in-flight or a snapshot session is open. Cursor shows `not-allowed` on hover. Client targeting (`cycleClientTarget`) is also locked. Client dragging (repositioning) remains allowed since it doesn't affect topology.
 - **Node click (when unlocked):** toggle alive/dead. On kill: `crashNode()` wipes memory, preserves journal, retracts memory-only acks, recomputes majority. On restart: `recoverNode()` restores memory from journal, enters `recovering` phase for 600ms. Resets all engine visuals.
 - **Link click (when unlocked):** toggle partition via link key from hitTest (ps1, ps2, or s1s2). If restoring a link, triggers `checkPartitionHealed()` which caps reconnected node versions and logs healing. Resets all engine visuals.
 - **Client link click (when unlocked):** toggle wp/rp connection

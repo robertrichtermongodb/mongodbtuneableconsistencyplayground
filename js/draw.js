@@ -203,7 +203,7 @@ function draw() {
 let _lockBannerBounds = null; // { x, y, w, h } — updated each draw, used by hitTest
 
 function drawLockHint() {
-  if (!isAnyEngineActive()) { _lockBannerBounds = null; return; }
+  if (!isTopologyLocked()) { _lockBannerBounds = null; return; }
   const wA = (writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted) || writeEngine.busy;
   const eA = (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted) || electionEngine.busy;
   const rA = (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted) || readEngine.busy;
@@ -211,7 +211,9 @@ function drawLockHint() {
   if (wA || eA) parts.push(eA ? 'Election' : 'Write');
   if (rA) parts.push('Read');
   const prefix = parts.join(' and ');
-  const text = `🔒 ${prefix} in progress - topology locked · finish or reset to reconfigure`;
+  const text = parts.length > 0
+    ? `🔒 ${prefix} in progress - topology locked · finish or reset to reconfigure`
+    : TEXTS.canvasTips.sessionLockBanner;
   ctx.save();
   ctx.font = '600 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   ctx.textAlign = 'center';

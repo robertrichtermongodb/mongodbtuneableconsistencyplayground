@@ -71,6 +71,8 @@ const TEXTS = {
     'btn-canvas-election':    'Trigger Election\n\nUses RAFT consensus: secondaries vote for the candidate with the most up-to-date data. A majority wins and becomes the new primary. Unconfirmed writes on the old primary are rolled back.',
   },
 
+  readSessionActiveBadge: 'ACTIVE SESSION',
+
   // ─── Config badge tooltips ───────────────────────────────────────────
   badge: {
     default: 'Default (since MongoDB 5.0)\n\nw:majority waits for a majority of replica set members to confirm the write to disk before acknowledging. This prevents data loss and rollback in all failure scenarios.',
@@ -165,11 +167,11 @@ const TEXTS = {
 
     primaryBouncedAfterAck(opLabel, isDefault, defaultNote) {
       return {
-        title: 'Primary restarted - background replication aborted',
-        explain: `The primary restarted after the client already received confirmation. <strong>${opLabel}</strong> was lost from the primary\u2019s memory ` +
-          `(not yet saved to disk). Background replication cannot continue. ` +
-          `<em>The client believes the write succeeded, but a subsequent read with <strong>rc:majority</strong> will not find it - ` +
-          `this is the <strong>rollback risk</strong> of non-default write concerns.</em>` +
+        title: 'Primary restarted - replication aborted',
+        explain: `The primary restarted. The client already received a confirmation, but <strong>${opLabel}</strong> was only stored in memory on the primary - ` +
+          `it was lost during the restart. Replication to secondaries cannot continue. ` +
+          `<em>The client was told the write succeeded. A subsequent read with <strong>rc:majority</strong> will not find it - ` +
+          `this is the <strong>data loss risk</strong> of non-default write concerns.</em>` +
           (!isDefault ? defaultNote : ''),
       };
     },
@@ -189,9 +191,9 @@ const TEXTS = {
         title: `Primary stores ${opLabel} in memory`,
         explain: `The primary stores <strong>${opLabel}</strong> in its <strong>in-memory cache</strong> and records it in the oplog (operation log). ` +
           (ackNeedsJournal
-            ? `With <strong>${j ? 'j:true' : 'w:majority'}</strong>, the primary\u2019s confirmation won\u2019t count until the next step writes the data to disk.`
-            : `The write can now be read with <strong>rc:local</strong>, but it\u2019s <strong>not yet on disk</strong> - a crash would lose it. ` +
-              `With <strong>j:false</strong>, this already counts as the primary\u2019s confirmation (no need to wait for the disk write).`),
+            ? `The client is still waiting - with <strong>${j ? 'j:true' : 'w:majority'}</strong>, the data must be flushed to disk before the client receives a confirmation.`
+            : `The write is in memory only - a crash right now would lose it. ` +
+              `With <strong>j:false</strong>, the client receives a confirmation now, without waiting for the disk write.`),
       };
     },
 
@@ -199,19 +201,19 @@ const TEXTS = {
       return {
         title: `Primary journal flush - ${opLabel} saved to disk${ackNeedsJournal ? ' (required for confirmation)' : ''}`,
         explain: ackNeedsJournal
-          ? `The primary writes <strong>${opLabel}</strong> to its <strong>on-disk journal</strong>, making the data crash-safe. ` +
-            (j ? `<strong>j:true</strong> requires this disk write before the primary\u2019s confirmation counts.`
-               : `<strong>w:majority</strong> requires a disk write before confirmation - even though the client set j:false. MongoDB\u2019s default server config overrides j:false for majority writes to ensure full durability.`)
-          : `The primary writes <strong>${opLabel}</strong> to its <strong>on-disk journal</strong>. The data on this node now <strong>survives a crash or restart</strong>. ` +
-            `The primary\u2019s confirmation was already counted in the previous step (memory) because j:false doesn\u2019t require a disk write for confirmation.`,
+          ? `The primary writes <strong>${opLabel}</strong> to its <strong>on-disk journal</strong> - the data now survives a crash on this node. ` +
+            (j ? `The client is still waiting - <strong>j:true</strong> requires this disk write before the confirmation is sent.`
+               : `The client is still waiting - <strong>w:majority</strong> requires a disk write before confirmation, even though you set j:false. MongoDB\u2019s default server config enforces this for majority writes.`)
+          : `The primary writes <strong>${opLabel}</strong> to its <strong>on-disk journal</strong> - the data now survives a crash on this node. ` +
+            `The client already received the confirmation in the previous step because <strong>j:false</strong> doesn\u2019t require a disk write.`,
       };
     },
 
     fireForget(opLabel, topoNote) {
       return {
         title: 'Fire-and-forget (w:0) - no confirmation',
-        explain: `<strong>w:0</strong>: the client sent the write but asked for no confirmation at all. ` +
-          `It won\u2019t know if the write succeeded or failed. Background replication to secondaries proceeds normally.` +
+        explain: `<strong>w:0</strong>: the client sent the write and immediately moved on - no waiting, no confirmation, no error handling. ` +
+          `The write may or may not have reached the server. Replication to secondaries continues as normal.` +
           topoNote,
       };
     },
@@ -223,10 +225,9 @@ const TEXTS = {
         explain: isRequired
           ? `The primary sends <strong>${opLabel}</strong> to <strong>${label}</strong> via oplog replication. The secondary stores it in memory.` +
             (ackNeedsJournal
-              ? ` The secondary has the data in memory, but its confirmation won\u2019t count yet - <strong>${j ? 'j:true' : 'w:majority'}</strong> requires a disk write first.`
-              : ` With <strong>j:false</strong>, this node\u2019s confirmation counts immediately - no need to wait for the disk write.`)
-          : `The primary sends <strong>${opLabel}</strong> to <strong>${label}</strong> via oplog replication (background). ` +
-            `This happens <strong>after the client already received confirmation</strong>.`,
+              ? ` The client is still waiting - <strong>${j ? 'j:true' : 'w:majority'}</strong> requires this node to flush to disk before it counts toward the confirmation.`
+              : ` With <strong>j:false</strong>, this node now counts toward the confirmation immediately.`)
+          : `The client already received the confirmation. These remaining replication steps are shown here so you can see how the data spreads across all nodes.`,
       };
     },
 
@@ -235,8 +236,8 @@ const TEXTS = {
       return {
         title: `${label}: journal flush to disk${ackNeedsJournal && isRequired ? ' (required for confirmation)' : ''}`,
         explain: ackNeedsJournal && isRequired
-          ? `<strong>${label}</strong> writes <strong>v${nextId}</strong> to its on-disk journal, making the data crash-safe on this node. ` +
-            `This node\u2019s confirmation now counts toward satisfying the write concern (w:${w}).`
+          ? `<strong>${label}</strong> writes <strong>v${nextId}</strong> to its on-disk journal - the data now survives a crash on this node. ` +
+            `The client is still waiting - this disk write is required for w:${w} to be satisfied.`
           : `<strong>${label}</strong> writes <strong>v${nextId}</strong> to its on-disk journal. The data on this node now <strong>survives a crash or restart</strong>.`,
       };
     },
@@ -253,7 +254,7 @@ const TEXTS = {
               `If the primary fails before a secondary gets this data, <strong>the write is permanently lost</strong> even though the client was told it succeeded.` +
               topoNote +
               defaultNote
-            : `Confirmed by ${needCount} node(s). Remaining secondaries will receive the data in the background.` +
+            : `Confirmed by ${needCount} node(s). The client receives a confirmation now. Any remaining secondaries will receive the data in the steps that follow.` +
               topoNote +
               defaultNote),
       };
@@ -270,7 +271,7 @@ const TEXTS = {
       return {
         title: 'Write concern cannot be satisfied',
         explain: `<strong>w:${w}</strong> needs ${needCount} node(s) to confirm, but only ${reachCount} are reachable. ` +
-          `MongoDB will wait until enough nodes become available or the <strong>wtimeout</strong> fires. ` +
+          `The client is blocked waiting - it will not receive a response until enough nodes come back, or the <strong>wtimeout</strong> expires. ` +
           `<strong>The write (${opLabel}) is NOT lost</strong> - it is already stored on the primary\u2019s journal.` +
           capLabel,
       };
@@ -456,7 +457,7 @@ const TEXTS = {
     rollbackNote(uncommitted) {
       if (uncommitted.length === 0) return ` No unconfirmed writes - all data is safe.`;
       return ` <strong>Unconfirmed write(s) ${uncommitted.map(v => `v${v.id}`).join(', ')} are rolled back</strong> - ` +
-        `they were never confirmed by a majority, so the new primary discards them. Any client that read these values via rc:local now holds stale data.`;
+        `they were never confirmed by a majority, so the new primary discards them. Any client that already read these values via rc:local saw data that no longer exists.`;
     },
   },
 
@@ -573,6 +574,7 @@ const TEXTS = {
         : `${name}: disconnected\nClick to reconnect.`;
     },
     lockBanner: `Topology locked during operation\n\nAllowing topology changes mid-operation would require tracking every possible state combination: primary alive/dead, secondaries in various replication stages, journal states, partition states - and their interactions. This grows exponentially and produces confusing, hard-to-explain results.\n\nInstead, configure your topology first, then run the operation to observe a clean, well-defined outcome. Chain multiple operations to explore failure scenarios step by step.`,
+    sessionLockBanner: '🔒 Snapshot session open - topology locked · end session or reset all to reconfigure',
   },
 
   // ─── Suggested scenarios ─────────────────────────────────────────────
