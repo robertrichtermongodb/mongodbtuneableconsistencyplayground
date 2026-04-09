@@ -1,114 +1,10 @@
 // ═══════════════════════════════════════
-// CUSTOM TOOLTIP COMPONENT
-// ═══════════════════════════════════════
-
-const tipEl = document.createElement('div');
-tipEl.className = 'tip';
-tipEl.innerHTML = '<div class="tip-title"></div><div class="tip-body"></div><div class="tip-arrow"></div>';
-document.body.appendChild(tipEl);
-
-let tipTimer = null;
-let tipTarget = null;
-const TIP_DELAY = 420;
-
-function showTip(el) {
-  const raw = el.getAttribute('data-tip') || '';
-  if (!raw) return;
-
-  const parts = raw.split('\n\n');
-  const titleEl = tipEl.querySelector('.tip-title');
-  const bodyEl  = tipEl.querySelector('.tip-body');
-
-  if (parts.length > 1) {
-    titleEl.textContent = parts[0];
-    titleEl.style.display = '';
-    bodyEl.innerHTML = parts.slice(1).join('<br><br>');
-  } else {
-    titleEl.style.display = 'none';
-    bodyEl.innerHTML = raw.replace(/\n/g, '<br>');
-  }
-
-  tipEl.classList.remove('below');
-  tipEl.classList.add('visible');
-
-  const tipRect = tipEl.getBoundingClientRect();
-  const elRect  = el.getBoundingClientRect();
-  let top  = elRect.top - tipRect.height - 10;
-  let left = elRect.left + elRect.width / 2 - tipRect.width / 2;
-
-  if (top < 4) {
-    top = elRect.bottom + 10;
-    tipEl.classList.add('below');
-  }
-  left = Math.max(6, Math.min(left, window.innerWidth - tipRect.width - 6));
-
-  tipEl.style.top  = top + 'px';
-  tipEl.style.left = left + 'px';
-
-  const arrowEl = tipEl.querySelector('.tip-arrow');
-  const arrowX  = elRect.left + elRect.width / 2 - left;
-  arrowEl.style.left = Math.max(12, Math.min(arrowX, tipRect.width - 12)) + 'px';
-  arrowEl.style.marginLeft = '0';
-}
-
-function hideTip() {
-  clearTimeout(tipTimer);
-  tipTimer = null;
-  tipTarget = null;
-  tipEl.classList.remove('visible');
-}
-
-document.addEventListener('mouseenter', e => {
-  const el = e.target.closest('[data-tip]');
-  if (!el) return;
-  if (tipTarget === el) return;
-  hideTip();
-  tipTarget = el;
-  tipTimer = setTimeout(() => showTip(el), TIP_DELAY);
-}, true);
-
-document.addEventListener('mouseleave', e => {
-  const el = e.target.closest('[data-tip]');
-  if (el && el === tipTarget) hideTip();
-}, true);
-
-document.addEventListener('click', () => hideTip(), true);
-document.addEventListener('scroll', () => hideTip(), true);
-
-// ═══════════════════════════════════════
-// TOOLTIP DEFINITIONS
-// ═══════════════════════════════════════
-
-const DROPDOWN_TIPS = TEXTS.dropdowns;
-const BUTTON_TIPS  = TEXTS.buttons;
-
-function syncTooltips() {
-  for (const [id, map] of Object.entries(DROPDOWN_TIPS)) {
-    const el = document.getElementById(id);
-    if (el) {
-      el.removeAttribute('title');
-      el.setAttribute('data-tip', map[el.value] || '');
-    }
-  }
-}
-
-function initButtonTips() {
-  for (const [id, text] of Object.entries(BUTTON_TIPS)) {
-    const el = document.getElementById(id);
-    if (el) {
-      el.removeAttribute('title');
-      el.setAttribute('data-tip', text);
-    }
-  }
-}
-
-// ═══════════════════════════════════════
 // NON-DEFAULT CONFIG BADGE
 // ═══════════════════════════════════════
 function syncWBadge() {
   const badge = document.getElementById('w-default-pill');
   if (!badge) return;
-  const w = document.getElementById('sel-w').value;
+  const w = getSelectedWriteConcern();
   if (w === 'majority') {
     badge.className = 'config-badge config-badge-ok';
     badge.textContent = '✓ DEFAULT';
@@ -125,34 +21,33 @@ document.getElementById('sel-w').addEventListener('change', syncWBadge);
 // MAIN ACTIONS
 // ═══════════════════════════════════════
 function handleWrite() {
-  const rA = readEngine.busy || (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted);
-  if (rA || writeEngine.busy || (writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted)) return;
+  if (isEngineActive(readEngine) || isEngineActive(writeEngine)) return;
   resetWriteVisual();
   draw();
-  const w  = document.getElementById('sel-w').value;
+  const w  = getSelectedWriteConcern();
   const wResolved = w === 'majority' ? 'majority' : parseInt(w, 10);
-  const j  = document.getElementById('sel-j').value === 'true';
-  log(`\u2500\u2500\u2500 Write: w:${wResolved}, j:${j} \u2500\u2500\u2500`, 'info');
-  runMachine(createWriteMachine(wResolved, j), writeEngine, 'write-step-panel');
+  const journalRequired = isJournalRequired();
+  log(`\u2500\u2500\u2500 Write: w:${wResolved}, j:${journalRequired} \u2500\u2500\u2500`, 'info');
+  runMachine(createWriteMachine(wResolved, journalRequired), writeEngine, 'write-step-panel');
 }
 
 function handleRead() {
-  if (readEngine.busy || (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted)) return;
+  if (isEngineActive(readEngine)) return;
   resetReadVisual();
   draw();
-  const rc       = document.getElementById('sel-rc').value;
-  const readPref = document.getElementById('sel-readpref').value;
+  const rc       = getSelectedReadConcern();
+  const readPref = getSelectedReadPref();
   log(`\u2500\u2500\u2500 Read: rc:${rc}, readPref:${readPref} \u2500\u2500\u2500`, 'info');
   runMachine(arrayMachine(buildReadSteps(rc, readPref)), readEngine, 'read-step-panel');
 }
 
 function handleSnapshotStart() {
-  if (readEngine.busy || (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted)) return;
+  if (isEngineActive(readEngine)) return;
   resetReadVisual({ clearSession: false });
   state.readClient.sessionActive = true;
   state.readClient.sessionSnapshotId = state.doc.majorityCommitId;
   draw();
-  const readPref = document.getElementById('sel-readpref').value;
+  const readPref = getSelectedReadPref();
   const snapLabel = state.readClient.sessionSnapshotId > 0 ? `v${state.readClient.sessionSnapshotId}` : 'none';
   log(`\u2500\u2500\u2500 Snapshot session started @ ${snapLabel} \u2500\u2500\u2500`, 'info');
   runMachine(arrayMachine(buildReadSteps('snapshot', readPref, state.readClient.sessionSnapshotId)), readEngine, 'read-step-panel');
@@ -160,10 +55,10 @@ function handleSnapshotStart() {
 
 function handleSnapshotReadAgain() {
   if (!state.readClient.sessionActive || state.readClient.sessionSnapshotId === null) return;
-  if (readEngine.busy || (readEngine.idx !== -1 && !readEngine.done && !readEngine.aborted)) return;
+  if (isEngineActive(readEngine)) return;
   resetReadVisual({ clearSession: false });
   draw();
-  const readPref = document.getElementById('sel-readpref').value;
+  const readPref = getSelectedReadPref();
   const snapLabel = state.readClient.sessionSnapshotId > 0 ? `v${state.readClient.sessionSnapshotId}` : 'none';
   log(`\u2500\u2500\u2500 Snapshot reread @ ${snapLabel} \u2500\u2500\u2500`, 'info');
   runMachine(arrayMachine(buildReadSteps('snapshot', readPref, state.readClient.sessionSnapshotId)), readEngine, 'read-step-panel');
@@ -211,7 +106,7 @@ function resetElectionVisual() {
 }
 
 function handleElection() {
-  if (electionEngine.busy || (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted)) return;
+  if (isEngineActive(electionEngine)) return;
   resetElectionVisual();
   resetWriteVisual();
   resetReadVisual();
@@ -263,39 +158,38 @@ function resetScenario() {
 // ═══════════════════════════════════════
 // CANVAS TOOLTIPS (native title attribute based on hover target)
 // ═══════════════════════════════════════
+function tipForLink(hit) {
+  const tips = TEXTS.canvasTips;
+  const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
+  const pair = pairMap[hit.key];
+  if (!pair) return '';
+  const labelA = state.nodes[pair[0]].label;
+  const labelB = state.nodes[pair[1]].label;
+  const linked = state.links[hit.key];
+  const isSecSec = pair[0] !== state.primaryKey && pair[1] !== state.primaryKey;
+  return isSecSec ? tips.linkSecSec(labelA, labelB, linked) : tips.link(labelA, labelB, linked);
+}
+
+function tipForClient(hit) {
+  const tips = TEXTS.canvasTips;
+  const client = hit.key === 'write' ? state.writeClient : state.readClient;
+  const nodeKeys = [null, ...Object.keys(state.nodes)];
+  const idx = nodeKeys.indexOf(client.targetNode);
+  const nextKey = nodeKeys[(idx + 1) % nodeKeys.length];
+  const nextLabel = nextKey ? state.nodes[nextKey].label : 'auto';
+  const currentLabel = client.targetNode ? state.nodes[client.targetNode].label : 'auto';
+  const targetStr = `current = ${currentLabel}, next click = ${nextLabel}`;
+  return hit.key === 'write' ? tips.clientWrite(targetStr) : tips.clientRead(targetStr);
+}
+
 function canvasTipFor(hit) {
   if (!hit) return '';
   const tips = TEXTS.canvasTips;
-  if (hit.type === 'node') {
-    const n = state.nodes[hit.key];
-    return tips.node(n.label, n.alive);
-  }
-  if (hit.type === 'link') {
-    const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
-    const pair = pairMap[hit.key];
-    if (!pair) return '';
-    const labelA = state.nodes[pair[0]].label;
-    const labelB = state.nodes[pair[1]].label;
-    const linked = state.links[hit.key];
-    const isSecSec = pair[0] !== state.primaryKey && pair[1] !== state.primaryKey;
-    return isSecSec ? tips.linkSecSec(labelA, labelB, linked) : tips.link(labelA, labelB, linked);
-  }
-  if (hit.type === 'client') {
-    const client = hit.key === 'write' ? state.writeClient : state.readClient;
-    const nodeKeys = [null, ...Object.keys(state.nodes)];
-    const idx = nodeKeys.indexOf(client.targetNode);
-    const nextKey = nodeKeys[(idx + 1) % nodeKeys.length];
-    const nextLabel = nextKey ? state.nodes[nextKey].label : 'auto';
-    const currentLabel = client.targetNode ? state.nodes[client.targetNode].label : 'auto';
-    const targetStr = `current = ${currentLabel}, next click = ${nextLabel}`;
-    return hit.key === 'write' ? tips.clientWrite(targetStr) : tips.clientRead(targetStr);
-  }
-  if (hit.type === 'clientLink') {
-    return tips.clientLink(hit.key, state.links[hit.key]);
-  }
-  if (hit.type === 'lockBanner') {
-    return tips.lockBanner;
-  }
+  if (hit.type === 'node') return tips.node(state.nodes[hit.key].label, state.nodes[hit.key].alive);
+  if (hit.type === 'link') return tipForLink(hit);
+  if (hit.type === 'client') return tipForClient(hit);
+  if (hit.type === 'clientLink') return tips.clientLink(hit.key, state.links[hit.key]);
+  if (hit.type === 'lockBanner') return tips.lockBanner;
   return '';
 }
 
@@ -318,75 +212,74 @@ function cycleClientTarget(clientKey) {
 // ═══════════════════════════════════════
 let dragging = null; // { key: 'write'|'read', offsetX, offsetY }
 
-function handleCanvasClick(hit) {
-  if (!hit) return;
-
-  // Topology is locked while any operation is in flight or a snapshot session is open between reads
-  if (isTopologyLocked() && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return;
-
-  if (hit.type === 'node') {
-    const n = state.nodes[hit.key];
-    n.alive = !n.alive;
-    const writeActive = writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted;
-    if (!n.alive) {
-      const hadUnjournaledData = n.memoryVersion > n.journalVersion;
-      crashNode(hit.key);
-      log(`${n.label} taken down \u2014 memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${n.journalVersion || 'none'}).`, 'warn');
+function handleNodeClick(nodeKey) {
+  const n = state.nodes[nodeKey];
+  n.alive = !n.alive;
+  const writeActive = isEngineActive(writeEngine);
+  if (!n.alive) {
+    const hadUnjournaledData = n.memoryVersion > n.journalVersion;
+    crashNode(nodeKey);
+    log(`${n.label} taken down \u2014 memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${n.journalVersion || 'none'}).`, 'warn');
+  } else {
+    const recoveredVersion = n.journalVersion;
+    recoverNode(nodeKey);
+    const synced = syncRejoiningNode(nodeKey);
+    n.phase = 'recovering';
+    draw();
+    if (synced && n.memoryVersion > recoveredVersion) {
+      log(`${n.label} recovering \u2014 caught up to v${n.memoryVersion} from primary.`, 'ok');
+    } else if (recoveredVersion > 0) {
+      log(`${n.label} recovering from journal \u2014 restored to v${recoveredVersion}.`, 'ok');
     } else {
-      const recoveredVersion = n.journalVersion;
-      recoverNode(hit.key);
-      const synced = syncRejoiningNode(hit.key);
-      n.phase = 'recovering';
-      draw();
-      if (synced && n.memoryVersion > recoveredVersion) {
-        log(`${n.label} recovering \u2014 caught up to v${n.memoryVersion} from primary.`, 'ok');
-      } else if (recoveredVersion > 0) {
-        log(`${n.label} recovering from journal \u2014 restored to v${recoveredVersion}.`, 'ok');
-      } else {
-        log(`${n.label} restarted with empty state.`, 'info');
-      }
-      setTimeout(() => { if (n.alive) { n.phase = 'idle'; draw(); syncButtons(); } }, 600);
+      log(`${n.label} restarted with empty state.`, 'info');
     }
-    if (!writeActive) resetWriteVisual();
-    resetReadVisual();
-    if (!electionEngine.done) resetElectionVisual();
-  } else if (hit.type === 'link') {
-    const lk = hit.key;
-    if (lk && state.links[lk] !== undefined) {
-      state.links[lk] = !state.links[lk];
-      const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
-      const pair = pairMap[lk];
-      const label = pair ? `${state.nodes[pair[0]].label} \u2194 ${state.nodes[pair[1]].label}` : lk;
-      log(`${label}: ${state.links[lk] ? 'connected' : 'partitioned'} \u2014 document state preserved.`, state.links[lk] ? 'ok' : 'warn');
+    setTimeout(() => { if (n.alive) { n.phase = 'idle'; draw(); syncButtons(); } }, PAUSE_RECOVERY_MS);
+  }
+  if (!writeActive) resetWriteVisual();
+  resetReadVisual();
+  if (!electionEngine.done) resetElectionVisual();
+}
 
-      if (state.links[lk]) {
-        checkPartitionHealed();
-      }
+function handleLinkClick(linkKey) {
+  if (!linkKey || state.links[linkKey] === undefined) return;
+  state.links[linkKey] = !state.links[linkKey];
+  const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
+  const pair = pairMap[linkKey];
+  const label = pair ? `${state.nodes[pair[0]].label} \u2194 ${state.nodes[pair[1]].label}` : linkKey;
+  log(`${label}: ${state.links[linkKey] ? 'connected' : 'partitioned'} \u2014 document state preserved.`, state.links[linkKey] ? 'ok' : 'warn');
+  if (state.links[linkKey]) checkPartitionHealed();
+  if (!isEngineActive(writeEngine)) resetWriteVisual();
+  resetReadVisual();
+  if (!electionEngine.done) resetElectionVisual();
+}
 
-      const writeActive = writeEngine.idx !== -1 && !writeEngine.done && !writeEngine.aborted;
-      if (!writeActive) resetWriteVisual();
-      resetReadVisual();
-      if (!electionEngine.done) resetElectionVisual();
+function handleClientLinkClick(clientKey) {
+  if (clientKey === 'wp') {
+    state.links.wp = !state.links.wp;
+    log(`Writer \u2192 Primary: ${state.links.wp ? 'connected' : 'disconnected'}.`, state.links.wp ? 'ok' : 'warn');
+    if (!state.links.wp && !writeEngine.done && writeEngine.idx >= 0 && !writeEngine.aborted) {
+      abortEngine(writeEngine);
+      state.writeClient.phase = 'error';
+      log('\u26A1 Writer connection interrupted \u2014 write timeout.', 'err');
     }
-  } else if (hit.type === 'clientLink') {
-    if (hit.key === 'wp') {
-      state.links.wp = !state.links.wp;
-      log(`Writer \u2192 Primary: ${state.links.wp ? 'connected' : 'disconnected'}.`, state.links.wp ? 'ok' : 'warn');
-      if (!state.links.wp && !writeEngine.done && writeEngine.idx >= 0 && !writeEngine.aborted) {
-        abortEngine(writeEngine);
-        state.writeClient.phase = 'error';
-        log('\u26A1 Writer connection interrupted \u2014 write timeout.', 'err');
-      }
-    } else if (hit.key === 'rp') {
-      state.links.rp = !state.links.rp;
-      log(`Reader connection: ${state.links.rp ? 'connected' : 'disconnected'}.`, state.links.rp ? 'ok' : 'warn');
-      if (!state.links.rp && !readEngine.done && readEngine.idx >= 0 && !readEngine.aborted) {
-        abortEngine(readEngine);
-        state.readClient.phase = 'error';
-        log('\u26A1 Reader connection interrupted \u2014 read timeout.', 'err');
-      }
+  } else if (clientKey === 'rp') {
+    state.links.rp = !state.links.rp;
+    log(`Reader connection: ${state.links.rp ? 'connected' : 'disconnected'}.`, state.links.rp ? 'ok' : 'warn');
+    if (!state.links.rp && !readEngine.done && readEngine.idx >= 0 && !readEngine.aborted) {
+      abortEngine(readEngine);
+      state.readClient.phase = 'error';
+      log('\u26A1 Reader connection interrupted \u2014 read timeout.', 'err');
     }
   }
+}
+
+function handleCanvasClick(hit) {
+  if (!hit) return;
+  if (isTopologyLocked() && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return;
+
+  if (hit.type === 'node')       handleNodeClick(hit.key);
+  else if (hit.type === 'link')  handleLinkClick(hit.key);
+  else if (hit.type === 'clientLink') handleClientLinkClick(hit.key);
 
   draw(); syncButtons();
 }
@@ -403,39 +296,39 @@ canvas.addEventListener('mousedown', e => {
   }
 });
 
-canvas.addEventListener('mousemove', e => {
-  const rect = canvas.getBoundingClientRect();
-  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+function handleCanvasDrag(mx, my) {
+  const c = dragging.key === 'write' ? state.writeClient : state.readClient;
+  c.x = Math.max(CLIENT_RADIUS, Math.min(canvasW - CLIENT_RADIUS, mx - dragging.offsetX));
+  c.y = Math.max(CLIENT_RADIUS, Math.min(canvasH - CLIENT_RADIUS, my - dragging.offsetY));
+  clientDragged[dragging.key] = true;
+  dragging.moved = true;
+  canvas.style.cursor = 'grabbing';
+  draw();
+}
 
-  if (dragging) {
-    const c = dragging.key === 'write' ? state.writeClient : state.readClient;
-    c.x = Math.max(CR, Math.min(canvasW - CR, mx - dragging.offsetX));
-    c.y = Math.max(CR, Math.min(canvasH - CR, my - dragging.offsetY));
-    clientDragged[dragging.key] = true;
-    dragging.moved = true;
-    canvas.style.cursor = 'grabbing';
-    draw();
-    return;
-  }
+function cursorForHit(hit) {
+  if (hit && hit.type === 'client') return 'grab';
+  if (isTopologyLocked() && hit && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return 'not-allowed';
+  if (hit && hit.type === 'lockBanner') return 'help';
+  return hit ? 'pointer' : 'default';
+}
 
+function handleCanvasHover(mx, my) {
   const hit = hitTest(mx, my);
-  const locked = isTopologyLocked();
-  if (hit && hit.type === 'client') {
-    canvas.style.cursor = 'grab';
-  } else if (locked && hit && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) {
-    canvas.style.cursor = 'not-allowed';
-  } else if (hit && hit.type === 'lockBanner') {
-    canvas.style.cursor = 'help';
-  } else {
-    canvas.style.cursor = hit ? 'pointer' : 'default';
-  }
+  canvas.style.cursor = cursorForHit(hit);
   const prev = getHoverTarget();
-  const changed = (prev?.type !== hit?.type || prev?.key !== hit?.key);
-  if (changed) {
+  if (prev?.type !== hit?.type || prev?.key !== hit?.key) {
     setHoverTarget(hit);
     canvas.title = canvasTipFor(hit);
     draw();
   }
+}
+
+canvas.addEventListener('mousemove', e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+  if (dragging) handleCanvasDrag(mx, my);
+  else handleCanvasHover(mx, my);
 });
 
 canvas.addEventListener('mouseup', e => {
@@ -468,7 +361,7 @@ canvas.addEventListener('mouseleave', () => {
 });
 ['sel-rc','sel-readpref'].forEach(id => {
   document.getElementById(id)?.addEventListener('change', () => {
-    if (id === 'sel-rc' && document.getElementById('sel-rc')?.value !== 'snapshot') {
+    if (id === 'sel-rc' && getSelectedReadConcern() !== 'snapshot') {
       state.readClient.sessionActive = false;
       state.readClient.sessionSnapshotId = null;
     }
@@ -538,10 +431,10 @@ function initPopups() {
 function applyScenario(scenario) {
   resetScenario();
   const s = scenario.setup;
-  document.getElementById('sel-w').value = s.w;
-  document.getElementById('sel-j').value = s.j;
-  document.getElementById('sel-rc').value = s.rc;
-  document.getElementById('sel-readpref').value = s.readPref;
+  setSelectedWriteConcern(s.w);
+  setSelectedJournal(s.j);
+  setSelectedReadConcern(s.rc);
+  setSelectedReadPref(s.readPref);
   if (s.links) {
     Object.entries(s.links).forEach(([k, v]) => { state.links[k] = v; });
   }
@@ -600,6 +493,35 @@ function toggleDebugLabels() {
   draw();
 }
 
+const DEBUG_ELEMENT_IDS = [
+  'sel-w', 'sel-j', 'sel-rc', 'sel-readpref',
+  'btn-write-start', 'btn-write-next', 'btn-write-finish',
+  'btn-read-start', 'btn-read-next', 'btn-read-finish',
+  'btn-read-session-start', 'btn-read-session-again', 'btn-read-session-end',
+  'btn-reset', 'btn-theme-toggle', 'btn-clear-log',
+  'btn-canvas-election', 'btn-canvas-reset-ui',
+  'write-step-panel', 'read-step-panel',
+  'write-status', 'read-status',
+  'scenarios-details', 'event-log', 'canvas',
+  'w-default-pill', 'step-panels-card',
+  'write-step-title', 'write-step-explain', 'write-step-badge',
+  'read-step-title', 'read-session-badge', 'read-step-explain', 'read-step-badge',
+  'write-phase-trail',
+  'topo-bar', 'topo-hint',
+  'session-actions',
+];
+
+function placeDomDebugBadge(overlay, el, label) {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return;
+  const badge = document.createElement('span');
+  badge.className = 'dbg-badge';
+  badge.textContent = label;
+  badge.style.left = (r.left + window.scrollX) + 'px';
+  badge.style.top  = (r.top  + window.scrollY) + 'px';
+  overlay.appendChild(badge);
+}
+
 function createDomBadges() {
   removeDomBadges();
   let overlay = document.getElementById('dbg-overlay');
@@ -608,46 +530,12 @@ function createDomBadges() {
     overlay.id = 'dbg-overlay';
     document.body.appendChild(overlay);
   }
-  const ids = [
-    'sel-w', 'sel-j', 'sel-rc', 'sel-readpref',
-    'btn-write-start', 'btn-write-next', 'btn-write-finish',
-    'btn-read-start', 'btn-read-next', 'btn-read-finish',
-    'btn-read-session-start', 'btn-read-session-again', 'btn-read-session-end',
-    'btn-reset', 'btn-theme-toggle', 'btn-clear-log',
-    'btn-canvas-election', 'btn-canvas-reset-ui',
-    'write-step-panel', 'read-step-panel',
-    'write-status', 'read-status',
-    'scenarios-details', 'event-log', 'canvas',
-    'w-default-pill', 'step-panels-card',
-    'write-step-title', 'write-step-explain', 'write-step-badge',
-    'read-step-title', 'read-session-badge', 'read-step-explain', 'read-step-badge',
-    'write-phase-trail',
-    'topo-bar', 'topo-hint',
-    'session-actions',
-  ];
-
-  function placeBadge(el, label) {
-    const r = el.getBoundingClientRect();
-    if (r.width === 0 && r.height === 0) return;
-    const badge = document.createElement('span');
-    badge.className = 'dbg-badge';
-    badge.textContent = label;
-    badge.style.left = (r.left + window.scrollX) + 'px';
-    badge.style.top  = (r.top  + window.scrollY) + 'px';
-    overlay.appendChild(badge);
-  }
-
-  ids.forEach(id => {
+  DEBUG_ELEMENT_IDS.forEach(id => {
     const el = document.getElementById(id);
-    if (el) placeBadge(el, id);
+    if (el) placeDomDebugBadge(overlay, el, id);
   });
-
-  document.querySelectorAll('.scenario-item').forEach((el, i) => {
-    placeBadge(el, 'scenario[' + i + ']');
-  });
-  document.querySelectorAll('.scenario-btn').forEach((el, i) => {
-    placeBadge(el, 'scenario-btn[' + i + ']');
-  });
+  document.querySelectorAll('.scenario-item').forEach((el, i) => placeDomDebugBadge(overlay, el, 'scenario[' + i + ']'));
+  document.querySelectorAll('.scenario-btn').forEach((el, i) => placeDomDebugBadge(overlay, el, 'scenario-btn[' + i + ']'));
 }
 
 function removeDomBadges() {

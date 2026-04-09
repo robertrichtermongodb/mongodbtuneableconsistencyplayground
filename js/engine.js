@@ -5,10 +5,12 @@ const writeEngine    = { mode: 'step', steps: [], idx: -1, _waitResolve: null, b
 const readEngine     = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
 const electionEngine = { mode: 'step', steps: [], idx: -1, _waitResolve: null, busy: false, done: false, aborted: false, _autoFinishId: null, _machine: null };
 
+function isEngineActive(eng) {
+  return (eng.idx !== -1 && !eng.done && !eng.aborted) || eng.busy;
+}
+
 function isAnyEngineActive() {
-  return [writeEngine, readEngine, electionEngine].some(
-    e => (e.idx !== -1 && !e.done && !e.aborted) || e.busy
-  );
+  return [writeEngine, readEngine, electionEngine].some(isEngineActive);
 }
 
 // Snapshot sessions persist between read step-runs; topology must stay stable until the session ends
@@ -45,13 +47,8 @@ function syncReadSessionBadge() {
   el.hidden = !on;
 }
 
-function syncButtons() {
-  const we = writeEngine, re = readEngine, ee = electionEngine;
-  const writeActive    = we.busy || (we.idx !== -1 && !we.done && !we.aborted);
-  const readActive     = re.busy || (re.idx !== -1 && !re.done && !re.aborted);
-  const electionActive = ee.busy || (ee.idx !== -1 && !ee.done && !ee.aborted);
-
-  // ── Write panel — repurposed for election steps when election is active ──
+function syncWritePanelButtons(writeActive, readActive, electionActive) {
+  const we = writeEngine, ee = electionEngine;
   const writePanelEl = document.getElementById('write-step-panel');
   if (writePanelEl) {
     const lbl = writePanelEl.querySelector('.step-label');
@@ -73,15 +70,15 @@ function syncButtons() {
 
   const activeEng  = electionActive ? ee : we;
   const btnWN = document.getElementById('btn-write-next');
-  const wnDis = readActive || activeEng.busy || activeEng._waitResolve === null;
-  btnWN.disabled = wnDis;
+  btnWN.disabled = readActive || activeEng.busy || activeEng._waitResolve === null;
   btnWN.setAttribute('data-tip', readActive && writeActive ? readBlockTip : TEXTS.buttons['btn-write-next']);
   const btnWF = document.getElementById('btn-write-finish');
-  const wfDis = readActive || activeEng.idx === -1 || activeEng._waitResolve === null;
-  btnWF.disabled = wfDis;
+  btnWF.disabled = readActive || activeEng.idx === -1 || activeEng._waitResolve === null;
   btnWF.setAttribute('data-tip', readActive && writeActive ? readBlockTip : TEXTS.buttons['btn-write-finish']);
+}
 
-  // ── Read panel ──
+function syncReadPanelButtons(readActive) {
+  const re = readEngine;
   const btnRS = document.getElementById('btn-read-start');
   btnRS.textContent = 'Query doc with ID 1';
   btnRS.disabled    = readActive;
@@ -97,11 +94,11 @@ function syncButtons() {
     btnSnapEnd.disabled   = readActive || !sessionActive;
   }
 
-  const rnDis = re.busy || re._waitResolve === null;
-  document.getElementById('btn-read-next').disabled   = rnDis;
+  document.getElementById('btn-read-next').disabled   = re.busy || re._waitResolve === null;
   document.getElementById('btn-read-finish').disabled  = re.idx === -1 || re._waitResolve === null;
+}
 
-  // ── Lock dropdowns ──
+function syncDropdownLocks(writeActive, readActive) {
   const selW = document.getElementById('sel-w');
   const selJ = document.getElementById('sel-j');
   if (selW) selW.disabled = writeActive;
@@ -112,55 +109,70 @@ function syncButtons() {
   const sessionTopoLock = !!state.readClient.sessionActive;
   if (selRC) selRC.disabled = readActive || sessionTopoLock;
   if (selRP) selRP.disabled = readActive || sessionTopoLock;
+}
 
-  const electionInfoText = '⚡ Election in progress\nuse Write panel controls to step through';
+function isElectionEligible(writeActive) {
+  const pk = state.primaryKey;
+  const primaryDown    = !state.nodes[pk].alive;
+  const partitioned    = isPrimaryPartitioned();
+  const aliveCount     = Object.values(state.nodes).filter(n => n.alive).length;
+  const canElect       = aliveCount >= majorityThreshold();
+  const hasCandidates  = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
+  const showForDead      = primaryDown && hasCandidates && canElect;
+  const showForPartition = partitioned;
+  const sessionTopoLock  = !!state.readClient.sessionActive;
+  return (showForDead || showForPartition) && !writeActive && !sessionTopoLock;
+}
 
-  // ── Canvas election button — shown when primary is dead OR partitioned ──
+function positionElectionButton(el) {
+  const allNodes = Object.values(state.nodes);
+  const cx = allNodes.reduce((s, n) => s + n.x, 0) / allNodes.length;
+  const cy = allNodes.reduce((s, n) => s + n.y, 0) / allNodes.length;
+  el.style.left = cx + 'px';
+  el.style.top  = (cy + 10) + 'px';
+  el.style.transform = 'translateX(-50%)';
+}
+
+function syncElectionButton(writeActive, electionActive) {
   const canvasBtnEl = document.getElementById('btn-canvas-election');
-  if (canvasBtnEl) {
-    const pk = state.primaryKey;
-    const pNode = state.nodes[pk];
-    const primaryDown    = !state.nodes[pk].alive;
-    const partitioned    = isPrimaryPartitioned();
-    const aliveCount     = Object.values(state.nodes).filter(n => n.alive).length;
-    const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
-    const canElect       = aliveCount >= majorityNeeded;
-    const hasCandidates  = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
-    const showForDead      = primaryDown && hasCandidates && canElect;
-    const showForPartition = partitioned;
-    const show = (showForDead || showForPartition) && !writeActive && !sessionTopoLock;
-    canvasBtnEl.style.display = show ? 'block' : 'none';
-    if (show) {
-      const allNodes = Object.values(state.nodes);
-      const cx = allNodes.reduce((s, n) => s + n.x, 0) / allNodes.length;
-      const cy = allNodes.reduce((s, n) => s + n.y, 0) / allNodes.length;
-      canvasBtnEl.style.left = cx + 'px';
-      canvasBtnEl.style.top  = (cy + 10) + 'px';
-      canvasBtnEl.style.transform = 'translateX(-50%)';
-      if (electionActive) {
-        canvasBtnEl.disabled = true;
-        canvasBtnEl.classList.add('canvas-election-info');
-        canvasBtnEl.innerHTML = electionInfoText.replace('\n', '<br>');
-      } else {
-        canvasBtnEl.disabled = false;
-        canvasBtnEl.classList.remove('canvas-election-info');
-        canvasBtnEl.innerHTML = '⚡ Trigger Election<span class="raft-hint">ⓘ Raft consensus - hover for details</span>';
-      }
-    }
-  }
+  if (!canvasBtnEl) return;
+  const show = isElectionEligible(writeActive);
+  canvasBtnEl.style.display = show ? 'block' : 'none';
+  if (!show) return;
 
+  positionElectionButton(canvasBtnEl);
+  if (electionActive) {
+    canvasBtnEl.disabled = true;
+    canvasBtnEl.classList.add('canvas-election-info');
+    canvasBtnEl.innerHTML = '\u26A1 Election in progress<br>use Write panel controls to step through';
+  } else {
+    canvasBtnEl.disabled = false;
+    canvasBtnEl.classList.remove('canvas-election-info');
+    canvasBtnEl.innerHTML = '\u26A1 Trigger Election<span class="raft-hint">\u24D8 Raft consensus - hover for details</span>';
+  }
+}
+
+function syncButtons() {
+  const writeActive    = isEngineActive(writeEngine);
+  const readActive     = isEngineActive(readEngine);
+  const electionActive = isEngineActive(electionEngine);
+
+  syncWritePanelButtons(writeActive, readActive, electionActive);
+  syncReadPanelButtons(readActive);
+  syncDropdownLocks(writeActive, readActive);
+  syncElectionButton(writeActive, electionActive);
   syncReadSessionBadge();
 }
 
 // ── Write panel Next/Finish smart wrappers ──
 function handleWritePanelNext() {
   const ee = electionEngine;
-  if (ee.idx !== -1 && !ee.done && !ee.aborted) advanceElectionStep();
+  if (isEngineActive(ee)) advanceElectionStep();
   else advanceWriteStep();
 }
 function handleWritePanelFinish() {
   const ee = electionEngine;
-  if (ee.idx !== -1 && !ee.done && !ee.aborted) autoFinishElection();
+  if (isEngineActive(ee)) autoFinishElection();
   else autoFinishWrite();
 }
 
@@ -186,7 +198,7 @@ function _autoFinish(eng, advanceFn) {
       return;
     }
     if (eng._waitResolve && !eng.busy) advanceFn();
-  }, 10);
+  }, AUTO_FINISH_TICK);
 }
 
 function autoFinishWrite()    { _autoFinish(writeEngine,    advanceWriteStep); }
@@ -200,13 +212,13 @@ async function waitForClick(eng) {
 
 function getIdleSummary(panelId) {
   if (panelId === 'write-step-panel') {
-    const w = document.getElementById('sel-w')?.value || 'majority';
-    const j = document.getElementById('sel-j')?.value || 'false';
+    const w = getSelectedWriteConcern() || 'majority';
+    const j = getSelectedJournal() || 'false';
     return TEXTS.configSummary.write(w, j, state.doc.latestId);
   }
   if (panelId === 'read-step-panel') {
-    const rc = document.getElementById('sel-rc')?.value || 'local';
-    const rp = document.getElementById('sel-readpref')?.value || 'primary';
+    const rc = getSelectedReadConcern() || 'local';
+    const rp = getSelectedReadPref() || 'primary';
     return TEXTS.configSummary.read(rc, rp, state.doc.latestId);
   }
   return { title: '', explain: '' };
@@ -243,6 +255,25 @@ const PANEL_EL_IDS = {
   'read-step-panel':  { badge: 'read-step-badge',  title: 'read-step-title',  explain: 'read-step-explain',  dots: 'read-progress-dots'  },
 };
 
+function renderStepExplain(explainEl, html, defaultOpen) {
+  const prevDetails = explainEl.querySelector('.step-details');
+  const wasOpen = prevDetails ? prevDetails.open : defaultOpen;
+  explainEl.innerHTML =
+    `<details class="step-details"${wasOpen ? ' open' : ''}>` +
+    `<summary class="step-details-toggle">Details</summary>` +
+    `<div class="step-explain-body">${html}</div>` +
+    `</details>`;
+}
+
+function renderStepDots(dotsEl, steps, currentIdx) {
+  dotsEl.innerHTML = '';
+  steps.forEach((_, j) => {
+    const d = document.createElement('div');
+    d.className = 'step-dot' + (j < currentIdx ? ' done' : j === currentIdx ? ' current' : '');
+    dotsEl.appendChild(d);
+  });
+}
+
 function showStepPanel(i, eng, panelId) {
   const ids = PANEL_EL_IDS[panelId];
   if (!ids) return;
@@ -258,30 +289,13 @@ function showStepPanel(i, eng, panelId) {
     document.getElementById(ids.badge).textContent = '';
     renderPhaseTrail(eng);
   } else {
-    const totalLabel = `${eng.steps.length}`;
-    document.getElementById(ids.badge).textContent = `Step ${i+1} of ${totalLabel}`;
+    document.getElementById(ids.badge).textContent = `Step ${i+1} of ${eng.steps.length}`;
     if (isWritePanel) renderPhaseTrail(eng);
   }
-  document.getElementById(ids.title).textContent  = s.title;
-  const explainEl = document.getElementById(ids.explain);
-  const prevDetails = explainEl.querySelector('.step-details');
-  const wasOpen = prevDetails ? prevDetails.open : false;
-  explainEl.innerHTML =
-    `<details class="step-details"${wasOpen ? ' open' : ''}>` +
-    `<summary class="step-details-toggle">Details</summary>` +
-    `<div class="step-explain-body">${s.explain}</div>` +
-    `</details>`;
-  const dotsEl = document.getElementById(ids.dots);
-  if (hasPhaseTrail) {
-    dotsEl.innerHTML = '';
-  } else {
-    dotsEl.innerHTML = '';
-    eng.steps.forEach((_, j) => {
-      const d = document.createElement('div');
-      d.className = 'step-dot' + (j < i ? ' done' : j === i ? ' current' : '');
-      dotsEl.appendChild(d);
-    });
-  }
+  document.getElementById(ids.title).textContent = s.title;
+  renderStepExplain(document.getElementById(ids.explain), s.explain, false);
+  if (hasPhaseTrail) document.getElementById(ids.dots).innerHTML = '';
+  else renderStepDots(document.getElementById(ids.dots), eng.steps, i);
 }
 
 // ── Phase trail rendering (write panel only) ──
@@ -310,72 +324,59 @@ function renderPhaseTrail(eng) {
   });
 }
 
+function phaseReplState(p, done, errored) {
+  if (errored && !p.acked) return 'error';
+  if (done) return 'done';
+  if (p.phase === 'repl') return p.replicated >= p.totalSecs ? 'done' : 'active';
+  return 'pending';
+}
+
+function phaseAckState(p, done, errored) {
+  if (errored) return 'error';
+  if (p.acked || done) return 'done';
+  return 'pending';
+}
+
+function buildFireForgetPhases(p, done, errored) {
+  const ffDone = p.phase === 'done';
+  return [
+    { label: 'Send',    state: sendState(p, done) },
+    { label: 'Primary', state: primaryState(p, done, errored) },
+    { label: 'Fire & forget', state: ffDone ? (errored ? 'error' : 'done') : (p.phase === 'fireForget' ? 'active' : 'pending') },
+  ];
+}
+
+function buildW1Phases(p, done, errored) {
+  const replLabel = `Repl ${p.replicated}/${p.totalSecs}`;
+  return [
+    { label: 'Send',    state: sendState(p, done) },
+    { label: 'Primary', state: primaryState(p, done, errored) },
+    { label: 'ACK',     state: p.acked ? 'done' : (errored ? 'error' : (p.phase === 'repl' ? 'active' : 'pending')) },
+    { label: replLabel, state: phaseReplState(p, done, errored) },
+  ];
+}
+
+function buildMajorityPhases(p, done, errored) {
+  const replLabel = `Repl ${p.replicated}/${p.totalSecs}`;
+  return [
+    { label: 'Send',    state: sendState(p, done) },
+    { label: 'Primary', state: primaryState(p, done, errored) },
+    { label: replLabel, state: phaseReplState(p, done, errored) },
+    { label: 'ACK',     state: phaseAckState(p, done, errored) },
+  ];
+}
+
 function buildPhases(eng) {
   if (eng.idx < 0 || eng.steps.length === 0) return null;
-
   const m = eng._machine;
   if (!m || typeof m.getProgress !== 'function') return null;
-
   const p = m.getProgress();
   const done = eng.done;
   const errored = p.errored;
 
-  // w:0 fire-and-forget: Send → Primary → Fire & forget
-  if (p.w === 0) {
-    const fireForgetDone = p.phase === 'done';
-    return [
-      { label: 'Send',    state: sendState(p, done) },
-      { label: 'Primary', state: primaryState(p, done, errored) },
-      { label: 'Fire & forget', state: fireForgetDone ? (errored ? 'error' : 'done') : (p.phase === 'fireForget' ? 'active' : 'pending') },
-    ];
-  }
-
-  // w:1 (no required secondaries): Send → Primary → ACK → Repl X/Y
-  // w:2/3/majority (required secondaries): Send → Primary → Repl X/Y → ACK
-  const hasRequiredRepl = p.secsNeeded > 0;
-  const replDone = p.replicated;
-  const replTotal = p.totalSecs;
-  const replLabel = `Repl ${replDone}/${replTotal}`;
-  const replInProgress = p.phase === 'repl' && (p.replicated > 0 || p.memApplied > 0);
-
-  function replState() {
-    if (errored && !p.acked) return 'error';
-    if (done) return 'done';
-    if (p.phase === 'repl') return replDone >= replTotal ? 'done' : 'active';
-    return 'pending';
-  }
-
-  function ackState() {
-    if (errored) return 'error';
-    if (p.acked || done) return 'done';
-    if (p.phase === 'repl' && hasRequiredRepl) {
-      // ACK is pending until repl satisfies write concern
-      return 'pending';
-    }
-    if (p.phase === 'repl' && !hasRequiredRepl) {
-      // w:1: primary done → ACK fires before repl
-      return 'pending';
-    }
-    return 'pending';
-  }
-
-  if (!hasRequiredRepl) {
-    // w:1: Send → Primary → ACK → Repl X/Y
-    return [
-      { label: 'Send',    state: sendState(p, done) },
-      { label: 'Primary', state: primaryState(p, done, errored) },
-      { label: 'ACK',     state: p.acked ? 'done' : (errored ? 'error' : (p.phase === 'repl' ? 'active' : 'pending')) },
-      { label: replLabel, state: replState() },
-    ];
-  }
-
-  // w:2/3/majority: Send → Primary → Repl X/Y → ACK
-  return [
-    { label: 'Send',    state: sendState(p, done) },
-    { label: 'Primary', state: primaryState(p, done, errored) },
-    { label: replLabel, state: replState() },
-    { label: 'ACK',     state: ackState() },
-  ];
+  if (p.w === 0) return buildFireForgetPhases(p, done, errored);
+  if (p.secsNeeded <= 0) return buildW1Phases(p, done, errored);
+  return buildMajorityPhases(p, done, errored);
 }
 
 function sendState(p, done) {

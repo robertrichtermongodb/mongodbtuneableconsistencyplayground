@@ -251,12 +251,12 @@ const THEMES = {
   },
 };
 
-let T = THEMES.light;
+let THEME = THEMES.light;
 
 function applyTheme(name) {
   const theme = THEMES[name];
   if (!theme) return;
-  T = theme;
+  THEME = theme;
 
   const root = document.documentElement;
   root.setAttribute('data-theme', name);

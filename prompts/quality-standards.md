@@ -73,3 +73,58 @@ Each metric: **GREEN = 2, YELLOW = 1, RED = 0**. Maximum: **20**.
 | 9 | Duplicated code patterns | ~6 | RED |
 | 10 | Tests passing | 100% | GREEN |
 | | **Total** | **3 / 20** | **Needs attention** |
+
+## Snapshot — 2026-04-10 (iteration 22: quality refactoring)
+
+| # | Metric | Previous | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 337 | 306 (`createWriteMachine` closure) | -31 | RED |
+| 2 | Functions > 30 lines | 19 | 23 | +4 | RED |
+| 3 | Avg function length | ~21 | 18.0 | -3 | YELLOW |
+| 4 | Magic numbers | ~150 | ~100 (many extracted as constants) | -50 | RED |
+| 5 | Single-char variables | ~76 | ~62 | -14 | RED |
+| 6 | Max nesting depth | ~6 | 6 | 0 | RED |
+| 7 | Max file length | 819 | 784 (`draw.js`) | -35 | RED |
+| 8 | Mixed-abstraction functions | ~15 | ~10 | -5 | RED |
+| 9 | Duplicated code patterns | ~6 | ~3 | -3 | YELLOW |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| | **Total** | **3 / 20** | **5 / 20** | **+2** | **Needs attention** |
+
+**Structural improvements not captured by metrics:**
+- 8 → 13 JS files (5 new focused modules)
+- `simulation.js` (677 lines) → 3 files (313 + 227 + 119)
+- `animation.js` (42) and `tooltips.js` (103) extracted
+- `createWriteMachine`: phase dispatch table with 5 named handlers
+- `syncButtons`: decomposed into 4 sub-functions
+- `buildReadSteps`: 5 per-concern builders + data return helper
+- `handleCanvasClick`: 3 per-type handlers
+- `drawBrokenMidpoint`/`drawHoverMidpoint`: eliminated 6 code duplications
+- 20+ named constants replacing magic numbers
+- `T` → `THEME`, `NR`/`CR` → `NODE_RADIUS`/`CLIENT_RADIUS`
+- `isEngineActive()`, `majorityThreshold()`, `getVersionEntry()` helpers
+
+## Snapshot — 2026-04-10 (iteration 23: quality refactoring part 2)
+
+| # | Metric | Previous | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 306 | 57 (`buildReadSteps`) | -249 | YELLOW |
+| 2 | Functions > 30 lines | 23 | 13 | -10 | RED |
+| 3 | Avg function length | 18.0 | ~18.2 | ~0 | YELLOW |
+| 4 | Magic numbers | ~100 | ~90 | -10 | RED |
+| 5 | Single-char variables | ~62 | ~52 | -10 | RED |
+| 6 | Max nesting depth | 6 | 4 | -2 | YELLOW |
+| 7 | Max file length | 784 | 777 (`draw.js`) | -7 | RED |
+| 8 | Mixed-abstraction functions | ~10 | ~4 | -6 | RED |
+| 9 | Duplicated code patterns | ~3 | ~1 | -2 | GREEN |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| | **Total** | **5 / 20** | **9 / 20** | **+4** | **Needs attention** |
+
+**Structural improvements not captured by metrics:**
+- `createWriteMachine` refactored from 306-line closure to context-object pattern with 23 module-level functions
+- `buildElectionSteps` decomposed: extracted `selectElectionCandidates`, `swapPrimaryRole`, `rollbackUncommittedVersions`, `capWinningPartitionVersions`, `invalidateSnapshotIfNeeded`, `logElectionResult`
+- `draw.js`: extracted `leafColorForNode`, `drawPhaseRing`, `drawAlivePip`, `versionBadgeColor`, `versionBadgeText`, `hitTestNodeLinks`, `hitTestClientLinks`, `drawDebugBadge`, `drawDebugNodeLabels`, `drawDebugLinkLabels`, `updateWriteStatusView`, `updateReadStatusView`
+- `engine.js`: extracted `renderStepExplain`, `renderStepDots`, `phaseReplState`, `phaseAckState`, `buildFireForgetPhases`, `buildW1Phases`, `buildMajorityPhases`, `isElectionEligible`, `positionElectionButton`
+- `app.js`: extracted `tipForLink`, `tipForClient`, `handleCanvasDrag`, `cursorForHit`, `handleCanvasHover`, `placeDomDebugBadge`, `DEBUG_ELEMENT_IDS` constant
+- `tooltips.js`: extracted `renderTipContent`, `positionTooltip`
+- `read-steps.js`: extracted `computeReadContext`
+- Semantic DOM helpers in `state.js`: `getSelectedWriteConcern`, `getSelectedJournal`, `isJournalRequired`, `getSelectedReadConcern`, `getSelectedReadPref` + corresponding setters — replaced ~28 inline `document.getElementById('sel-...').value` calls

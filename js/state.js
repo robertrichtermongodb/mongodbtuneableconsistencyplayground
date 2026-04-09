@@ -4,6 +4,15 @@
 const PARTICLE_MS  = 1400;
 const AUTO_STEP_MS = 700;
 
+// Visual pauses — skipped in tests via skipAnimations / delay()
+const PAUSE_SHORT_MS    = 250;
+const PAUSE_MEDIUM_MS   = 350;
+const PAUSE_LONG_MS     = 600;
+const PAUSE_STAGGER_MS  = 100;
+const PAUSE_JOURNAL_MS  = 400;
+const PAUSE_RECOVERY_MS = 600;
+const AUTO_FINISH_TICK  = 10;
+
 // Pure timing utility — no DOM deps, available to all subsequent files
 function delay(ms) {
   if (typeof skipAnimations !== 'undefined' && skipAnimations) return Promise.resolve();
@@ -33,6 +42,31 @@ const state = {
     majorityCommitId: 0, // highest id confirmed by ≥2 nodes
   },
 };
+
+// ═══════════════════════════════════════
+// DOM HELPERS — semantic UI element access
+// ═══════════════════════════════════════
+function getSelectedWriteConcern() { return document.getElementById('sel-w').value; }
+function getSelectedJournal()      { return document.getElementById('sel-j').value; }
+function isJournalRequired()       { return document.getElementById('sel-j').value === 'true'; }
+function getSelectedReadConcern()  { return document.getElementById('sel-rc').value; }
+function getSelectedReadPref()     { return document.getElementById('sel-readpref').value; }
+
+function setSelectedWriteConcern(v) { document.getElementById('sel-w').value = v; }
+function setSelectedJournal(v)      { document.getElementById('sel-j').value = v; }
+function setSelectedReadConcern(v)  { document.getElementById('sel-rc').value = v; }
+function setSelectedReadPref(v)     { document.getElementById('sel-readpref').value = v; }
+
+// ═══════════════════════════════════════
+// DERIVED CONSTANTS
+// ═══════════════════════════════════════
+function majorityThreshold() {
+  return Math.floor(Object.keys(state.nodes).length / 2) + 1;
+}
+
+function getVersionEntry(id) {
+  return state.doc.versions.find(v => v.id === id);
+}
 
 // ═══════════════════════════════════════
 // DOC STATE HELPERS
@@ -78,16 +112,16 @@ function effectiveWriteTarget() {
 function isReachableForWrite(key) {
   const wt = effectiveWriteTarget();
   if (key === wt) return state.nodes[key].alive;
-  const lk = getLinkBetween(wt, key);
-  return state.nodes[key].alive && (lk ? state.links[lk] : true);
+  const linkKey = getLinkBetween(wt, key);
+  return state.nodes[key].alive && (linkKey ? state.links[linkKey] : true);
 }
 
 // Reachability from the primary's perspective (used by linearizable reads).
 function isReachableFromPrimary(key) {
   const pk = state.primaryKey;
   if (key === pk) return state.nodes[key].alive;
-  const lk = getLinkBetween(pk, key);
-  return state.nodes[key].alive && (lk ? state.links[lk] : true);
+  const linkKey = getLinkBetween(pk, key);
+  return state.nodes[key].alive && (linkKey ? state.links[linkKey] : true);
 }
 
 // BFS from nodeKey over alive nodes connected by up links.
@@ -100,8 +134,8 @@ function getPartition(nodeKey) {
     const current = queue.shift();
     for (const other of Object.keys(state.nodes)) {
       if (visited.has(other) || !state.nodes[other].alive) continue;
-      const lk = getLinkBetween(current, other);
-      if (lk && state.links[lk]) {
+      const linkKey = getLinkBetween(current, other);
+      if (linkKey && state.links[linkKey]) {
         visited.add(other);
         queue.push(other);
       }
@@ -114,8 +148,7 @@ function isPrimaryPartitioned() {
   const pk = state.primaryKey;
   if (!state.nodes[pk].alive) return false;
   const partition = getPartition(pk);
-  const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
-  return partition.size < majorityNeeded;
+  return partition.size < majorityThreshold();
 }
 
 // Computed, not stored — isolation is dynamic based on current topology.
@@ -131,8 +164,8 @@ function isNodeIsolated(nodeKey) {
   if (nodeKey === state.primaryKey) return false;
   const node = state.nodes[nodeKey];
   if (!node.alive) return false;
-  const lk = getLinkBetween(nodeKey, state.primaryKey);
-  return !lk || !state.links[lk];
+  const linkKey = getLinkBetween(nodeKey, state.primaryKey);
+  return !linkKey || !state.links[linkKey];
 }
 
 function getServedVersion(nodeKey, rc) {
@@ -179,7 +212,7 @@ function recoverNode(nodeKey) {
 function recomputeMajorityCommit() {
   state.doc.majorityCommitId = 0;
   for (let i = state.doc.versions.length - 1; i >= 0; i--) {
-    if (state.doc.versions[i].ackedBy.size >= 2) {
+    if (state.doc.versions[i].ackedBy.size >= majorityThreshold()) {
       state.doc.majorityCommitId = state.doc.versions[i].id;
       break;
     }
@@ -192,7 +225,7 @@ function advanceMajorityCommit() {
   // the first (highest) version that has ≥2 acks.
   for (let i = state.doc.versions.length - 1; i >= 0; i--) {
     const v = state.doc.versions[i];
-    if (v.ackedBy.size >= 2 && v.id > state.doc.majorityCommitId) {
+    if (v.ackedBy.size >= majorityThreshold() && v.id > state.doc.majorityCommitId) {
       state.doc.majorityCommitId = v.id;
       break;
     }

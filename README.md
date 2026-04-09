@@ -56,6 +56,12 @@ For smaller/cheaper AI models, see [`prompts/small-model-usage.md`](prompts/smal
 - [`docs/correctness.md`](docs/correctness.md) — correctness audit against MongoDB 8.0 docs (correct / incorrect / imprecise / missing)
 - [`docs/research.md`](docs/research.md) — compressed MongoDB concern reference notes
 
+## Quality Score
+
+The codebase tracks an architectural fitness function (10 metrics, max 20 points) defined in [`prompts/quality-standards.md`](prompts/quality-standards.md). The quality score must not decrease between code iterations — every change should leave the codebase at least as healthy as before.
+
+**Current score: 9 / 20** (iteration 23, 2026-04-10)
+
 ## Disclaimer
 
 This tool is **not** part of the official MongoDB documentation and is **not** maintained by MongoDB. It is an educational tool that simplifies workflows and omits details for clarity. Always consult the [official MongoDB documentation](https://www.mongodb.com/docs/manual/) before deploying anything to production.
