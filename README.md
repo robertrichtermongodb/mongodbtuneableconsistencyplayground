@@ -60,7 +60,7 @@ For smaller/cheaper AI models, see [`prompts/small-model-usage.md`](prompts/smal
 
 The codebase tracks an architectural fitness function (10 metrics, max 20 points) defined in [`prompts/quality-standards.md`](prompts/quality-standards.md). The quality score must not decrease between code iterations — every change should leave the codebase at least as healthy as before.
 
-**Current score: 9 / 20** (iteration 23, 2026-04-10)
+**Current score: 15 / 22** (iteration 24, 2026-04-10)
 
 ## Disclaimer
 

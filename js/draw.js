@@ -48,6 +48,39 @@ const HOVER_RING_OFFSET = 6;
 const DOC_BADGE_WIDTH   = 80;
 const DOC_BADGE_ROW_H   = 18;
 
+// Fonts (reused across many drawing functions)
+const FONT_SMALL         = '9px system-ui';
+const FONT_LABEL         = 'bold 12px system-ui';
+const FONT_VALUE         = 'bold 11px system-ui';
+const FONT_CAPTION       = '12px system-ui';
+const FONT_TINY          = '7px system-ui';
+const FONT_PARTICLE      = 'bold 10px system-ui';
+const FONT_DEBUG         = 'bold 9px monospace';
+
+// Stroke widths
+const STROKE_DEFAULT       = 1.8;
+const STROKE_HOVER         = 3;
+const STROKE_CLIENT_BORDER = 2.5;
+const STROKE_SEC_SEC       = 1.2;
+
+// Doc icon geometry (proportional to size param)
+const DOC_ICON_WIDTH_RATIO = 0.78;
+const DOC_ICON_FOLD_RATIO  = 0.28;
+
+// Node element offsets
+const NODE_DEAD_ALPHA        = 0.22;
+const NODE_LEAF_ICON_SIZE    = 30;
+const NODE_LEAF_ICON_OFFSET  = 10;
+const NODE_LABEL_OFFSET_Y    = 22;
+
+// Client label offsets
+const CLIENT_META_LINE1_DY   = 14;
+const CLIENT_META_STACK_DY   = 27;
+const CLIENT_META_LINE_GAP   = 13;
+
+// Particle
+const PARTICLE_RADIUS        = 14;
+
 let canvasW = 0, canvasH = 0;
 
 function resizeCanvas() {
@@ -93,8 +126,8 @@ function pointToSegDist(px, py, ax, ay, bx, by) {
   const dx = bx - ax, dy = by - ay;
   const len2 = dx * dx + dy * dy;
   if (len2 === 0) return Math.hypot(px - ax, py - ay);
-  const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
-  return Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
+  const param = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / len2));
+  return Math.hypot(px - (ax + param * dx), py - (ay + param * dy));
 }
 
 function hitTestNodeLinks(mx, my) {
@@ -102,11 +135,11 @@ function hitTestNodeLinks(mx, my) {
   for (let i = 0; i < nodeKeys.length; i++) {
     for (let j = i + 1; j < nodeKeys.length; j++) {
       const aKey = nodeKeys[i], bKey = nodeKeys[j];
-      const a = state.nodes[aKey], b = state.nodes[bKey];
+      const nodeA = state.nodes[aKey], nodeB = state.nodes[bKey];
       const linkKey = getLinkBetween(aKey, bKey);
       if (!linkKey) continue;
-      const dist = pointToSegDist(mx, my, a.x, a.y, b.x, b.y);
-      if (dist < HIT_LINK_DISTANCE && Math.hypot(mx - a.x, my - a.y) > NODE_RADIUS + HIT_LINK_MARGIN && Math.hypot(mx - b.x, my - b.y) > NODE_RADIUS + HIT_LINK_MARGIN)
+      const dist = pointToSegDist(mx, my, nodeA.x, nodeA.y, nodeB.x, nodeB.y);
+      if (dist < HIT_LINK_DISTANCE && Math.hypot(mx - nodeA.x, my - nodeA.y) > NODE_RADIUS + HIT_LINK_MARGIN && Math.hypot(mx - nodeB.x, my - nodeB.y) > NODE_RADIUS + HIT_LINK_MARGIN)
         return { type: 'link', key: linkKey };
     }
   }
@@ -122,9 +155,9 @@ function hitTestClientLinks(mx, my) {
     return { type: 'clientLink', key: 'wp' };
   const tKey = resolveReadTarget(getSelectedReadConcern(), getSelectedReadPref());
   if (tKey) {
-    const t = state.nodes[tKey];
-    const rDist = pointToSegDist(mx, my, rc.x, rc.y + CLIENT_RADIUS, t.x, t.y - NODE_RADIUS);
-    if (rDist < HIT_LINK_DISTANCE && Math.hypot(mx - rc.x, my - rc.y) > CLIENT_RADIUS + HIT_TOLERANCE && Math.hypot(mx - t.x, my - t.y) > NODE_RADIUS + HIT_TOLERANCE)
+    const targetNode = state.nodes[tKey];
+    const rDist = pointToSegDist(mx, my, rc.x, rc.y + CLIENT_RADIUS, targetNode.x, targetNode.y - NODE_RADIUS);
+    if (rDist < HIT_LINK_DISTANCE && Math.hypot(mx - rc.x, my - rc.y) > CLIENT_RADIUS + HIT_TOLERANCE && Math.hypot(mx - targetNode.x, my - targetNode.y) > NODE_RADIUS + HIT_TOLERANCE)
       return { type: 'clientLink', key: 'rp' };
   }
   return null;
@@ -132,8 +165,8 @@ function hitTestClientLinks(mx, my) {
 
 function hitTest(mx, my) {
   if (_lockBannerBounds) {
-    const b = _lockBannerBounds;
-    if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h)
+    const bounds = _lockBannerBounds;
+    if (mx >= bounds.x && mx <= bounds.x + bounds.w && my >= bounds.y && my <= bounds.y + bounds.h)
       return { type: 'lockBanner' };
   }
   const wc = state.writeClient, rc = state.readClient;
@@ -215,8 +248,8 @@ function drawLockHint() {
 }
 
 function drawDebugBadge(label, x, y) {
-  const m = ctx.measureText(label);
-  const pw = m.width + 6, ph = 13;
+  const metrics = ctx.measureText(label);
+  const pw = metrics.width + 6, ph = 13;
   ctx.fillStyle = '#ff00cc';
   ctx.globalAlpha = 0.88;
   ctx.beginPath(); ctx.roundRect(x, y, pw, ph, 3); ctx.fill();
@@ -242,9 +275,9 @@ function drawDebugLinkLabels() {
     if (k === 'wp' || k === 'rp') return;
     const pair = pairMap[k];
     if (!pair) return;
-    const a = state.nodes[pair[0]], b = state.nodes[pair[1]];
-    if (!a || !b) return;
-    drawDebugBadge('link:' + k, (a.x + b.x) / 2 - 10, (a.y + b.y) / 2 - 8);
+    const nodeA = state.nodes[pair[0]], nodeB = state.nodes[pair[1]];
+    if (!nodeA || !nodeB) return;
+    drawDebugBadge('link:' + k, (nodeA.x + nodeB.x) / 2 - 10, (nodeA.y + nodeB.y) / 2 - 8);
   });
   drawDebugBadge('link:wp', (wc.x + state.nodes[state.primaryKey].x) / 2 - 10,
     (wc.y + state.nodes[state.primaryKey].y) / 2 - 8);
@@ -257,7 +290,7 @@ function drawDebugLinkLabels() {
 
 function drawDebugLabels() {
   ctx.save();
-  ctx.font = 'bold 9px monospace';
+  ctx.font = FONT_DEBUG;
   ctx.textBaseline = 'top';
 
   drawDebugNodeLabels();
@@ -329,13 +362,13 @@ function drawRSBox() {
   const by  = Math.min(...ys) - NODE_RADIUS - 24;
   const bh  = Math.max(...ys) + NODE_RADIUS + 72 - by;
   ctx.save();
-  ctx.strokeStyle = THEME.rsBoxBorder; ctx.lineWidth = 1.8; ctx.setLineDash([6,4]);
+  ctx.strokeStyle = THEME.rsBoxBorder; ctx.lineWidth = STROKE_DEFAULT; ctx.setLineDash([6,4]);
   ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 10); ctx.stroke();
   ctx.setLineDash([]);
   const isz = 17;
   const lx = bx + 12, ly = by + bh + 6;
   drawIcon(ICON_RS, lx + isz/2, ly + isz/2, isz, THEME.rsBoxText);
-  ctx.fillStyle = THEME.rsBoxText; ctx.font = '12px system-ui'; ctx.textAlign = 'left';
+  ctx.fillStyle = THEME.rsBoxText; ctx.font = FONT_CAPTION; ctx.textAlign = 'left';
   ctx.fillText('Replica Set  \u00B7  3-node P-S-S  \u00B7  majority = 2', lx + isz + 6, ly + 13);
   ctx.restore();
 }
@@ -344,7 +377,7 @@ function drawBrokenMidpoint(mx, my, fillColor, strokeColor) {
   ctx.beginPath(); ctx.arc(mx, my, LINK_MIDPOINT_R, 0, Math.PI * 2);
   ctx.fillStyle = fillColor; ctx.fill();
   ctx.strokeStyle = strokeColor; ctx.lineWidth = 1.5; ctx.stroke();
-  ctx.fillStyle = strokeColor; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = strokeColor; ctx.font = FONT_LABEL; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('\u00D7', mx, my); ctx.textBaseline = 'alphabetic';
 }
 
@@ -352,7 +385,7 @@ function drawHoverMidpoint(mx, my, strokeColor, iconColor) {
   ctx.beginPath(); ctx.arc(mx, my, LINK_HOVER_R, 0, Math.PI * 2);
   ctx.fillStyle = THEME.cardBg; ctx.fill();
   ctx.strokeStyle = strokeColor; ctx.lineWidth = 1; ctx.stroke();
-  ctx.fillStyle = iconColor; ctx.font = '9px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = iconColor; ctx.font = FONT_SMALL; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('\u2702', mx, my); ctx.textBaseline = 'alphabetic';
 }
 
@@ -366,31 +399,31 @@ function drawReplicationLinks() {
   }
 
   pairs.forEach(([aKey, bKey]) => {
-    const a = state.nodes[aKey];
-    const b = state.nodes[bKey];
+    const nodeA = state.nodes[aKey];
+    const nodeB = state.nodes[bKey];
     const linkKey = getLinkBetween(aKey, bKey);
     if (!linkKey) return;
     const linked = state.links[linkKey];
-    const broken = !linked || !a.alive || !b.alive;
+    const broken = !linked || !nodeA.alive || !nodeB.alive;
     const hoverLinkKey = linkKey;
     const hovered = hoverTarget && hoverTarget.type === 'link' && hoverTarget.key === hoverLinkKey;
     // Role-based, not link-key-based — correct after election when roles swap
     const isSecSec = aKey !== state.primaryKey && bKey !== state.primaryKey;
     ctx.save();
     ctx.strokeStyle = hovered ? THEME.linkHover : broken ? THEME.linkBroken : isSecSec ? THEME.linkSecSec : THEME.linkDefault;
-    ctx.lineWidth = hovered ? 3 : isSecSec ? 1.2 : 2;
+    ctx.lineWidth = hovered ? STROKE_HOVER : isSecSec ? STROKE_SEC_SEC : 2;
     ctx.setLineDash(isSecSec ? [2, 4] : [5, 4]);
-    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(nodeA.x, nodeA.y); ctx.lineTo(nodeB.x, nodeB.y); ctx.stroke();
     ctx.setLineDash([]);
-    const mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;
-    if (!a.alive || !b.alive) {
+    const mx = (nodeA.x + nodeB.x) / 2, my = (nodeA.y + nodeB.y) / 2;
+    if (!nodeA.alive || !nodeB.alive) {
       drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
     } else if (!linked) {
       drawBrokenMidpoint(mx, my, THEME.amberDarkBg, THEME.amber);
     } else if (hovered) {
       drawHoverMidpoint(mx, my, THEME.linkHoverMid, THEME.blue);
       if (isSecSec) {
-        ctx.font = '9px system-ui'; ctx.fillStyle = THEME.textSecondary; ctx.textBaseline = 'top';
+        ctx.font = FONT_SMALL; ctx.fillStyle = THEME.textSecondary; ctx.textBaseline = 'top';
         ctx.fillText('Heartbeat only \u2014 no replication', mx, my + 14);
       }
     }
@@ -399,18 +432,18 @@ function drawReplicationLinks() {
 }
 
 function drawWriteClientLine() {
-  const p = state.nodes[effectiveWriteTarget()];
+  const targetNode = state.nodes[effectiveWriteTarget()];
   const wc = state.writeClient;
   const linked = state.links.wp;
   const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === 'wp';
 
   ctx.save();
   ctx.strokeStyle = hovered ? THEME.wLinkHover : !linked ? THEME.linkDeadMid : THEME.wLinkOk;
-  ctx.lineWidth = hovered ? 3 : 1.8; ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(wc.x, wc.y + CLIENT_RADIUS); ctx.lineTo(p.x, p.y - NODE_RADIUS);
+  ctx.lineWidth = hovered ? STROKE_HOVER : STROKE_DEFAULT; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(wc.x, wc.y + CLIENT_RADIUS); ctx.lineTo(targetNode.x, targetNode.y - NODE_RADIUS);
   ctx.stroke(); ctx.setLineDash([]);
 
-  const mx = (wc.x + p.x) / 2, my = (wc.y + CLIENT_RADIUS + p.y - NODE_RADIUS) / 2;
+  const mx = (wc.x + targetNode.x) / 2, my = (wc.y + CLIENT_RADIUS + targetNode.y - NODE_RADIUS) / 2;
   if (!linked) {
     drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
   } else if (hovered) {
@@ -422,18 +455,18 @@ function drawWriteClientLine() {
 function drawReadClientLine(rcVal, readPref) {
   const tKey = resolveReadTarget(rcVal, readPref);
   if (!tKey) return;
-  const t = state.nodes[tKey];
+  const targetNode = state.nodes[tKey];
   const rc = state.readClient;
   const linked = state.links.rp;
   const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === 'rp';
 
   ctx.save();
-  ctx.strokeStyle = hovered ? THEME.rLinkHover : !linked ? THEME.linkDeadMid : t.alive ? THEME.rLinkOk : THEME.rLinkDead;
-  ctx.lineWidth = hovered ? 3 : 1.8; ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(rc.x, rc.y + CLIENT_RADIUS); ctx.lineTo(t.x, t.y - NODE_RADIUS);
+  ctx.strokeStyle = hovered ? THEME.rLinkHover : !linked ? THEME.linkDeadMid : targetNode.alive ? THEME.rLinkOk : THEME.rLinkDead;
+  ctx.lineWidth = hovered ? STROKE_HOVER : STROKE_DEFAULT; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(rc.x, rc.y + CLIENT_RADIUS); ctx.lineTo(targetNode.x, targetNode.y - NODE_RADIUS);
   ctx.stroke(); ctx.setLineDash([]);
 
-  const mx = (rc.x + t.x) / 2, my = (rc.y + CLIENT_RADIUS + t.y - NODE_RADIUS) / 2;
+  const mx = (rc.x + targetNode.x) / 2, my = (rc.y + CLIENT_RADIUS + targetNode.y - NODE_RADIUS) / 2;
   if (!linked) {
     drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
   } else if (hovered) {
@@ -481,23 +514,23 @@ function drawNode(node, role) {
   if (hovered) {
     ctx.beginPath(); ctx.arc(node.x, node.y, NODE_RADIUS + HOVER_RING_OFFSET, 0, Math.PI * 2);
     ctx.strokeStyle = node.alive ? THEME.hoverKillHint : THEME.hoverRevHint;
-    ctx.lineWidth = 3; ctx.stroke();
+    ctx.lineWidth = STROKE_HOVER; ctx.stroke();
   }
-  if (!node.alive) ctx.globalAlpha = 0.22;
+  if (!node.alive) ctx.globalAlpha = NODE_DEAD_ALPHA;
   const defStroke = isIsolated ? THEME.amber : role === 'primary' ? THEME.nodeStrokePri : THEME.nodeStrokeSec;
   const stroke    = phaseStroke(node.phase) || defStroke;
   ctx.beginPath(); ctx.arc(node.x, node.y, NODE_RADIUS, 0, Math.PI * 2);
   ctx.fillStyle = phaseFill(node.phase); ctx.fill();
-  ctx.strokeStyle = stroke; ctx.lineWidth = node.phase !== 'idle' ? 3 : 1.8; ctx.stroke();
+  ctx.strokeStyle = stroke; ctx.lineWidth = node.phase !== 'idle' ? STROKE_HOVER : STROKE_DEFAULT; ctx.stroke();
 
-  drawIcon(ICON_LEAF, node.x, node.y - 10, 30, leafColorForNode(node, role, isIsolated), 24);
+  drawIcon(ICON_LEAF, node.x, node.y - NODE_LEAF_ICON_OFFSET, NODE_LEAF_ICON_SIZE, leafColorForNode(node, role, isIsolated), 24);
 
   if (node.phase === 'candidate')  drawPhaseRing(node.x, node.y, THEME.purple, [3, 3]);
   if (node.phase === 'recovering') drawPhaseRing(node.x, node.y, THEME.flowRepl, [5, 3]);
   if (isIsolated)                  drawPhaseRing(node.x, node.y, THEME.amber, [4, 3]);
 
-  ctx.fillStyle = THEME.nodeText; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center';
-  ctx.fillText(isIsolated ? `${node.label} (isolated)` : node.label, node.x, node.y + 22);
+  ctx.fillStyle = THEME.nodeText; ctx.font = FONT_LABEL; ctx.textAlign = 'center';
+  ctx.fillText(isIsolated ? `${node.label} (isolated)` : node.label, node.x, node.y + NODE_LABEL_OFFSET_Y);
   drawNodeDocBadge(node);
   ctx.restore();
 
@@ -530,11 +563,11 @@ function drawNodeDocBadge(node) {
   ctx.strokeStyle = THEME.badgeDivider; ctx.lineWidth = 1;
   ctx.beginPath(); ctx.moveTo(bx + 4, by + rowH); ctx.lineTo(bx + bw - 4, by + rowH); ctx.stroke();
 
-  ctx.font = '7px system-ui'; ctx.textAlign = 'left';
+  ctx.font = FONT_TINY; ctx.textAlign = 'left';
   ctx.fillStyle = THEME.textHint; ctx.fillText('MEM', bx + 5, by + 11);
   ctx.fillStyle = THEME.textHint; ctx.fillText('DISK', bx + 5, by + rowH + 12);
 
-  ctx.font = 'bold 11px system-ui'; ctx.textAlign = 'right';
+  ctx.font = FONT_VALUE; ctx.textAlign = 'right';
   ctx.fillStyle = memColor;
   ctx.fillText(versionBadgeText(mem), bx + bw - 6, by + 13);
 
@@ -542,73 +575,73 @@ function drawNodeDocBadge(node) {
   ctx.fillText(versionBadgeText(disk), bx + bw - 6, by + rowH + 13);
 
   if (mem > 0 && mem > disk) {
-    ctx.fillStyle = THEME.amberAlpha88; ctx.font = '9px system-ui'; ctx.textAlign = 'center';
+    ctx.fillStyle = THEME.amberAlpha88; ctx.font = FONT_SMALL; ctx.textAlign = 'center';
     ctx.fillText('\u25BC', bx + bw / 2, by + rowH + 1);
   }
 }
 
 function drawWriteClient(wVal) {
-  const c = state.writeClient;
-  const stroke = c.phase === 'received' ? THEME.green : c.phase === 'error' ? THEME.red : THEME.amber;
-  const fill   = c.phase === 'received' ? THEME.greenMidBg : c.phase === 'error' ? THEME.redDarkBg : THEME.clientIdleBg;
+  const client = state.writeClient;
+  const stroke = client.phase === 'received' ? THEME.green : client.phase === 'error' ? THEME.red : THEME.amber;
+  const fill   = client.phase === 'received' ? THEME.greenMidBg : client.phase === 'error' ? THEME.redDarkBg : THEME.clientIdleBg;
   ctx.save();
-  ctx.beginPath(); ctx.arc(c.x, c.y, CLIENT_RADIUS, 0, Math.PI*2);
+  ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS, 0, Math.PI*2);
   ctx.fillStyle = fill; ctx.fill();
-  ctx.strokeStyle = stroke; ctx.lineWidth = 2.5; ctx.stroke();
-  ctx.fillStyle = THEME.clientText; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center';
-  ctx.fillText('Write', c.x, c.y - 4); ctx.fillText('Client', c.x, c.y + 11);
-  ctx.fillStyle = THEME.amber; ctx.font = '9px system-ui';
-  ctx.fillText('w:' + wVal, c.x, c.y + CLIENT_RADIUS + 14);
-  let wYOff = CLIENT_RADIUS + 27;
-  if (c.targetNode) {
-    ctx.fillStyle = THEME.purple; ctx.font = '9px system-ui';
-    ctx.fillText('\u2192 ' + state.nodes[c.targetNode].label, c.x, c.y + wYOff);
-    wYOff += 13;
+  ctx.strokeStyle = stroke; ctx.lineWidth = STROKE_CLIENT_BORDER; ctx.stroke();
+  ctx.fillStyle = THEME.clientText; ctx.font = FONT_LABEL; ctx.textAlign = 'center';
+  ctx.fillText('Write', client.x, client.y - 4); ctx.fillText('Client', client.x, client.y + 11);
+  ctx.fillStyle = THEME.amber; ctx.font = FONT_SMALL;
+  ctx.fillText('w:' + wVal, client.x, client.y + CLIENT_RADIUS + CLIENT_META_LINE1_DY);
+  let wYOff = CLIENT_RADIUS + CLIENT_META_STACK_DY;
+  if (client.targetNode) {
+    ctx.fillStyle = THEME.purple; ctx.font = FONT_SMALL;
+    ctx.fillText('\u2192 ' + state.nodes[client.targetNode].label, client.x, client.y + wYOff);
+    wYOff += CLIENT_META_LINE_GAP;
   }
   if (state.writeClient.lastWrittenVersion > 0) {
-    ctx.fillStyle = THEME.textSecondary; ctx.font = '9px system-ui';
-    ctx.fillText(`wrote v${c.lastWrittenVersion}`, c.x, c.y + wYOff);
+    ctx.fillStyle = THEME.textSecondary; ctx.font = FONT_SMALL;
+    ctx.fillText(`wrote v${client.lastWrittenVersion}`, client.x, client.y + wYOff);
   }
   ctx.restore();
 }
 
 function drawReadClient(rcVal) {
-  const c = state.readClient;
-  const sessionActive = !!c.sessionActive;
-  const stroke = c.phase === 'received' ? THEME.green : c.phase === 'error' ? THEME.red : THEME.blue;
-  const fill   = c.phase === 'received' ? THEME.greenMidBg : c.phase === 'error' ? THEME.redDarkBg : THEME.blueDarkBg;
+  const client = state.readClient;
+  const sessionActive = !!client.sessionActive;
+  const stroke = client.phase === 'received' ? THEME.green : client.phase === 'error' ? THEME.red : THEME.blue;
+  const fill   = client.phase === 'received' ? THEME.greenMidBg : client.phase === 'error' ? THEME.redDarkBg : THEME.blueDarkBg;
   ctx.save();
   if (sessionActive) {
-    ctx.beginPath(); ctx.arc(c.x, c.y, CLIENT_RADIUS + HOVER_RING_OFFSET, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS + HOVER_RING_OFFSET, 0, Math.PI*2);
     ctx.strokeStyle = THEME.amber; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
     ctx.stroke(); ctx.setLineDash([]);
   }
-  ctx.beginPath(); ctx.arc(c.x, c.y, CLIENT_RADIUS, 0, Math.PI*2);
+  ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS, 0, Math.PI*2);
   ctx.fillStyle = fill; ctx.fill();
-  ctx.strokeStyle = stroke; ctx.lineWidth = 2.5; ctx.stroke();
-  ctx.fillStyle = THEME.clientText; ctx.font = 'bold 12px system-ui'; ctx.textAlign = 'center';
-  ctx.fillText('Read', c.x, c.y - 4); ctx.fillText('Client', c.x, c.y + 11);
-  ctx.fillStyle = THEME.blue; ctx.font = '9px system-ui';
-  ctx.fillText('rc:' + rcVal, c.x, c.y + CLIENT_RADIUS + 14);
-  let yOff = CLIENT_RADIUS + 27;
-  if (c.targetNode) {
-    ctx.fillStyle = THEME.purple; ctx.font = '9px system-ui';
-    ctx.fillText('\u2192 ' + state.nodes[c.targetNode].label, c.x, c.y + yOff);
-    yOff += 13;
+  ctx.strokeStyle = stroke; ctx.lineWidth = STROKE_CLIENT_BORDER; ctx.stroke();
+  ctx.fillStyle = THEME.clientText; ctx.font = FONT_LABEL; ctx.textAlign = 'center';
+  ctx.fillText('Read', client.x, client.y - 4); ctx.fillText('Client', client.x, client.y + 11);
+  ctx.fillStyle = THEME.blue; ctx.font = FONT_SMALL;
+  ctx.fillText('rc:' + rcVal, client.x, client.y + CLIENT_RADIUS + CLIENT_META_LINE1_DY);
+  let yOff = CLIENT_RADIUS + CLIENT_META_STACK_DY;
+  if (client.targetNode) {
+    ctx.fillStyle = THEME.purple; ctx.font = FONT_SMALL;
+    ctx.fillText('\u2192 ' + state.nodes[client.targetNode].label, client.x, client.y + yOff);
+    yOff += CLIENT_META_LINE_GAP;
   }
   if (sessionActive) {
-    const snapLabel = c.sessionSnapshotId > 0 ? `v${c.sessionSnapshotId}` : 'none';
-    ctx.fillStyle = THEME.amber; ctx.font = '9px system-ui';
-    ctx.fillText('Session @ ' + snapLabel, c.x, c.y + yOff);
-    yOff += 13;
+    const snapLabel = client.sessionSnapshotId > 0 ? `v${client.sessionSnapshotId}` : 'none';
+    ctx.fillStyle = THEME.amber; ctx.font = FONT_SMALL;
+    ctx.fillText('Session @ ' + snapLabel, client.x, client.y + yOff);
+    yOff += CLIENT_META_LINE_GAP;
   }
-  if (c.lastReceivedVersion !== null) {
-    const v = c.lastReceivedVersion;
-    const vStr = v.id > 0 ? `v${v.id}` : 'none';
-    const suffix = v.dirty ? ' \u26A0' : v.id > 0 ? ' \u2713' : '';
-    ctx.fillStyle = v.dirty ? THEME.amber : v.id > 0 ? THEME.green : THEME.textSecondary;
-    ctx.font = '9px system-ui';
-    ctx.fillText(`got ${vStr}${suffix}`, c.x, c.y + yOff);
+  if (client.lastReceivedVersion !== null) {
+    const ver = client.lastReceivedVersion;
+    const vStr = ver.id > 0 ? `v${ver.id}` : 'none';
+    const suffix = ver.dirty ? ' \u26A0' : ver.id > 0 ? ' \u2713' : '';
+    ctx.fillStyle = ver.dirty ? THEME.amber : ver.id > 0 ? THEME.green : THEME.textSecondary;
+    ctx.font = FONT_SMALL;
+    ctx.fillText(`got ${vStr}${suffix}`, client.x, client.y + yOff);
   }
   ctx.restore();
 }
@@ -616,14 +649,14 @@ function drawReadClient(rcVal) {
 function drawDocIcon(x, y, color) { drawDocIconAt(x, y, 14, color); }
 
 function drawDocIconAt(x, y, size, color) {
-  const w = size * 0.78, h = size, fold = size * 0.28;
-  const lx = x - w / 2, ly = y - h / 2;
+  const iconW = size * DOC_ICON_WIDTH_RATIO, iconH = size, fold = size * DOC_ICON_FOLD_RATIO;
+  const lx = x - iconW / 2, ly = y - iconH / 2;
   ctx.beginPath();
-  ctx.moveTo(lx, ly); ctx.lineTo(lx + w - fold, ly); ctx.lineTo(lx + w, ly + fold);
-  ctx.lineTo(lx + w, ly + h); ctx.lineTo(lx, ly + h); ctx.closePath();
+  ctx.moveTo(lx, ly); ctx.lineTo(lx + iconW - fold, ly); ctx.lineTo(lx + iconW, ly + fold);
+  ctx.lineTo(lx + iconW, ly + iconH); ctx.lineTo(lx, ly + iconH); ctx.closePath();
   ctx.fillStyle = color; ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(lx + w - fold, ly); ctx.lineTo(lx + w - fold, ly + fold); ctx.lineTo(lx + w, ly + fold);
+  ctx.moveTo(lx + iconW - fold, ly); ctx.lineTo(lx + iconW - fold, ly + fold); ctx.lineTo(lx + iconW, ly + fold);
   ctx.closePath();
   ctx.fillStyle = color + '55'; ctx.fill();
   ctx.strokeStyle = THEME.docStroke; ctx.lineWidth = 0.5; ctx.stroke();
@@ -641,11 +674,11 @@ function drawIconText(text, cx, textBaselineY, font, color, iconSize) {
 }
 
 function drawCheckbox(cx, cy, size, done, color) {
-  const r = size * 0.22, x = cx - size / 2, y = cy - size / 2;
+  const radius = size * 0.22, x = cx - size / 2, y = cy - size / 2;
   ctx.fillStyle = done ? color + '22' : THEME.badgeBg;
-  ctx.beginPath(); ctx.roundRect(x, y, size, size, r); ctx.fill();
+  ctx.beginPath(); ctx.roundRect(x, y, size, size, radius); ctx.fill();
   ctx.strokeStyle = color; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.roundRect(x, y, size, size, r); ctx.stroke();
+  ctx.beginPath(); ctx.roundRect(x, y, size, size, radius); ctx.stroke();
   ctx.strokeStyle = color; ctx.lineWidth = done ? 2 : 1.5; ctx.lineCap = 'round';
   if (done) {
     ctx.beginPath();
@@ -677,11 +710,11 @@ function drawParticles() {
   state.particles.forEach(p => {
     if (p.x == null) return;
     ctx.save();
-    ctx.beginPath(); ctx.arc(p.x, p.y, 14, 0, Math.PI*2);
+    ctx.beginPath(); ctx.arc(p.x, p.y, PARTICLE_RADIUS, 0, Math.PI*2);
     ctx.fillStyle = p.color + '18'; ctx.fill();
     drawDocIcon(p.x, p.y, p.color);
     if (p.label) {
-      ctx.fillStyle = THEME.particleLabel; ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+      ctx.fillStyle = THEME.particleLabel; ctx.font = FONT_PARTICLE; ctx.textAlign = 'center';
       ctx.fillText(p.label, p.x, p.y - 15);
     }
     ctx.restore();
@@ -689,10 +722,10 @@ function drawParticles() {
 }
 
 function drawIcon(path, cx, cy, size, color, viewSize = 16) {
-  const s = size / viewSize;
+  const scale = size / viewSize;
   ctx.save();
   ctx.translate(cx - size / 2, cy - size / 2);
-  ctx.scale(s, s);
+  ctx.scale(scale, scale);
   ctx.fillStyle = color;
   ctx.fill(path);
   ctx.restore();
@@ -747,14 +780,14 @@ function updateReadStatusView(rBox) {
   }
   if (rc.lastReceivedVersion === null) return;
 
-  const v = rc.lastReceivedVersion;
-  const vStr = v.id > 0 ? `v${v.id}` : 'none';
-  if (v.id === 0) {
+  const ver = rc.lastReceivedVersion;
+  const vStr = ver.id > 0 ? `v${ver.id}` : 'none';
+  if (ver.id === 0) {
     const reason = (rcVal === 'local' || rcVal === 'available')
       ? 'Node has no data yet.'
       : `No majority-confirmed data exists (latest v${state.doc.latestId} still in-flight).`;
     rBox.innerHTML = TEXTS.consistency.readNone(rcVal, reason, sessionSuffix);
-  } else if (v.dirty) {
+  } else if (ver.dirty) {
     rBox.innerHTML = TEXTS.consistency.dirtyRead(vStr, rcVal, state.doc.majorityCommitId, sessionSuffix);
   } else {
     rBox.innerHTML = TEXTS.consistency.safeRead(vStr, rcVal, sessionSuffix);

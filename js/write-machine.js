@@ -79,9 +79,9 @@ function wmPickNextSec(ctx) { return wmEligibleSecs(ctx)[0] || null; }
 
 function wmMakeMemStep(ctx, k) {
   const label = state.nodes[k].label;
-  const t = TEXTS.write.secondaryMem(label, ctx.opLabel, ctx.acked, ctx.ackNeedsJournal, ctx.journalRequired);
+  const txt = TEXTS.write.secondaryMem(label, ctx.opLabel, ctx.acked, ctx.ackNeedsJournal, ctx.journalRequired);
   return {
-    title: t.title, serverSide: true, explain: t.explain,
+    title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
       await awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => {
         state.nodes[k].memoryVersion = ctx.nextId;
@@ -100,9 +100,9 @@ function wmMakeMemStep(ctx, k) {
 
 function wmMakeJournalStep(ctx, k) {
   const label = state.nodes[k].label;
-  const t = TEXTS.write.secondaryJournal(label, ctx.nextId, ctx.acked, ctx.ackNeedsJournal, ctx.w);
+  const txt = TEXTS.write.secondaryJournal(label, ctx.nextId, ctx.acked, ctx.ackNeedsJournal, ctx.w);
   return {
-    title: t.title, serverSide: true, explain: t.explain,
+    title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
       journalFlush(k);
       if (ctx.ackNeedsJournal) {
@@ -121,8 +121,8 @@ function wmMakeJournalStep(ctx, k) {
 
 function wmHandleSendPhase(ctx) {
   if (!state.links.wp) {
-    const t = TEXTS.write.writerDisconnected;
-    return wmFailWrite(ctx, t.title, t.explain);
+    const txt = TEXTS.write.writerDisconnected;
+    return wmFailWrite(ctx, txt.title, txt.explain);
   }
   if (effectiveWriteTarget() !== state.primaryKey) {
     const targetLabel = state.nodes[effectiveWriteTarget()].label;
@@ -141,9 +141,9 @@ function wmHandleSendPhase(ctx) {
     );
   }
   ctx.phase = 'primaryMem';
-  const t = TEXTS.write.clientSend(ctx.opLabel, ctx.w, ctx.journalRequired);
+  const txt = TEXTS.write.clientSend(ctx.opLabel, ctx.w, ctx.journalRequired);
   return wmEmit(ctx, {
-    title: t.title, explain: t.explain,
+    title: txt.title, explain: txt.explain,
     run: () => {
       const entry = { id: ctx.nextId, op: ctx.op, ackedBy: new Set() };
       state.doc.versions.push(entry);
@@ -160,9 +160,9 @@ function wmHandleSendPhase(ctx) {
 
 function wmHandlePrimaryMemPhase(ctx) {
   ctx.phase = 'primaryJournal';
-  const t = TEXTS.write.primaryMem(ctx.opLabel, ctx.ackNeedsJournal, ctx.journalRequired);
+  const txt = TEXTS.write.primaryMem(ctx.opLabel, ctx.ackNeedsJournal, ctx.journalRequired);
   return wmEmit(ctx, {
-    title: t.title, serverSide: true, explain: t.explain,
+    title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
       const wt = effectiveWriteTarget();
       state.nodes[wt].memoryVersion = ctx.nextId;
@@ -180,9 +180,9 @@ function wmHandlePrimaryMemPhase(ctx) {
 
 function wmHandlePrimaryJournalPhase(ctx) {
   ctx.phase = ctx.w === 0 ? 'fireForget' : 'repl';
-  const t = TEXTS.write.primaryJournal(ctx.opLabel, ctx.ackNeedsJournal, ctx.journalRequired);
+  const txt = TEXTS.write.primaryJournal(ctx.opLabel, ctx.ackNeedsJournal, ctx.journalRequired);
   return wmEmit(ctx, {
-    title: t.title, serverSide: true, explain: t.explain,
+    title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
       const wt = effectiveWriteTarget();
       journalFlush(wt);
@@ -201,9 +201,9 @@ function wmHandlePrimaryJournalPhase(ctx) {
 function wmHandleFireForgetPhase(ctx) {
   ctx.phase = 'done';
   const secs = wmEligibleSecs(ctx);
-  const t = TEXTS.write.fireForget(ctx.opLabel, ctx.topoNote);
+  const txt = TEXTS.write.fireForget(ctx.opLabel, ctx.topoNote);
   return wmEmit(ctx, {
-    title: t.title, explain: t.explain,
+    title: txt.title, explain: txt.explain,
     run: async () => {
       secs.forEach((k, i) => setTimeout(() =>
         awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => {
@@ -226,27 +226,27 @@ function wmHandleFireForgetPhase(ctx) {
 
 function wmTryJournalAfterMem(ctx) {
   if (ctx.ackNeedsJournal || ctx.memApplied.size === 0) return null;
-  const k = [...ctx.memApplied][0];
-  ctx.memApplied.delete(k);
-  ctx.replicated.add(k);
-  return wmEmit(ctx, wmMakeJournalStep(ctx, k));
+  const secKey = [...ctx.memApplied][0];
+  ctx.memApplied.delete(secKey);
+  ctx.replicated.add(secKey);
+  return wmEmit(ctx, wmMakeJournalStep(ctx, secKey));
 }
 
 function wmTryPendingJournal(ctx) {
   if (!ctx.pendingJournal) return null;
-  const k = ctx.pendingJournal;
+  const secKey = ctx.pendingJournal;
   ctx.pendingJournal = null;
-  ctx.memApplied.delete(k);
-  ctx.replicated.add(k);
-  return wmEmit(ctx, wmMakeJournalStep(ctx, k));
+  ctx.memApplied.delete(secKey);
+  ctx.replicated.add(secKey);
+  return wmEmit(ctx, wmMakeJournalStep(ctx, secKey));
 }
 
 function wmTryAckStep(ctx) {
   if (ctx.acked || !wmIsWcSatisfied(ctx)) return null;
   ctx.acked = true;
-  const t = TEXTS.write.ack(ctx.opLabel, ctx.w, ctx.journalRequired, ctx.nextId, ctx.ackNeedsJournal, ctx.needCount, ctx.isDefault, ctx.defaultNote, ctx.topoNote);
+  const txt = TEXTS.write.ack(ctx.opLabel, ctx.w, ctx.journalRequired, ctx.nextId, ctx.ackNeedsJournal, ctx.needCount, ctx.isDefault, ctx.defaultNote, ctx.topoNote);
   return wmEmit(ctx, {
-    title: t.title, explain: t.explain,
+    title: txt.title, explain: txt.explain,
     run: async () => {
       state.nodes[effectiveWriteTarget()].phase = 'acked';
       await awaitParticle(state.nodes[effectiveWriteTarget()], state.writeClient, THEME.flowAck, 'ACK', () => {
@@ -269,9 +269,9 @@ function wmTryWcFailure(ctx) {
   if (ctx.acked || wmIsWcSatisfied(ctx)) return null;
   const reachCount = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
   ctx.phase = 'done';
-  const t = TEXTS.write.wcUnsatisfied(ctx.opLabel, ctx.w, ctx.needCount, reachCount);
+  const txt = TEXTS.write.wcUnsatisfied(ctx.opLabel, ctx.w, ctx.needCount, reachCount);
   return wmEmit(ctx, {
-    title: t.title, explain: t.explain,
+    title: txt.title, explain: txt.explain,
     run: async () => {
       await delay(PAUSE_LONG_MS);
       const wt = effectiveWriteTarget();
@@ -287,9 +287,9 @@ function wmTryWcFailure(ctx) {
 
 function wmReplCompleteStep(ctx) {
   ctx.phase = 'done';
-  const t = TEXTS.write.replComplete(ctx.nextId, ctx.topoNote);
+  const txt = TEXTS.write.replComplete(ctx.nextId, ctx.topoNote);
   return wmEmit(ctx, {
-    title: t.title, serverSide: true, explain: t.explain,
+    title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
       Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
       draw();

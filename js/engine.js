@@ -9,6 +9,10 @@ function isEngineActive(eng) {
   return (eng.idx !== -1 && !eng.done && !eng.aborted) || eng.busy;
 }
 
+function isEngineEmpty(eng) {
+  return eng.idx < 0 || eng.steps.length === 0;
+}
+
 function isAnyEngineActive() {
   return [writeEngine, readEngine, electionEngine].some(isEngineActive);
 }
@@ -21,7 +25,7 @@ function isTopologyLocked() {
 
 function abortEngine(eng) {
   eng.aborted = true;
-  if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
+  if (eng._waitResolve) { const resolve = eng._waitResolve; eng._waitResolve = null; resolve(); }
 }
 
 // Centralised engine field reset — clears all engine state and cancels any auto-finish timer.
@@ -29,7 +33,7 @@ function abortEngine(eng) {
 // so runMachine's async loop terminates cleanly instead of hanging forever.
 function resetEngine(eng) {
   eng.aborted = true;
-  if (eng._waitResolve) { const r = eng._waitResolve; eng._waitResolve = null; r(); }
+  if (eng._waitResolve) { const resolve = eng._waitResolve; eng._waitResolve = null; resolve(); }
   // Do NOT reset eng.aborted here — the running async loop must still see it as true
   // when it resumes from the resolved promise. runMachine() resets it to false on
   // the next fresh start.
@@ -177,21 +181,24 @@ function handleWritePanelFinish() {
 }
 
 function advanceWriteStep() {
-  if (writeEngine._waitResolve) { const r = writeEngine._waitResolve; writeEngine._waitResolve = null; r(); }
+  if (writeEngine._waitResolve) { const resolve = writeEngine._waitResolve; writeEngine._waitResolve = null; resolve(); }
 }
 function advanceReadStep() {
-  if (readEngine._waitResolve) { const r = readEngine._waitResolve; readEngine._waitResolve = null; r(); }
+  if (readEngine._waitResolve) { const resolve = readEngine._waitResolve; readEngine._waitResolve = null; resolve(); }
 }
 function advanceElectionStep() {
-  if (electionEngine._waitResolve) { const r = electionEngine._waitResolve; electionEngine._waitResolve = null; r(); }
+  if (electionEngine._waitResolve) { const resolve = electionEngine._waitResolve; electionEngine._waitResolve = null; resolve(); }
 }
 
 // Shared auto-finish implementation — skips animations and drives engine to completion instantly.
 function _autoFinish(eng, advanceFn) {
-  if (eng.done || eng.idx === -1 || eng._autoFinishId) return;
+  const notRunning = eng.done || eng.idx === -1;
+  const alreadyAutoFinishing = !!eng._autoFinishId;
+  if (notRunning || alreadyAutoFinishing) return;
   setSkipAnimations(true);
   eng._autoFinishId = setInterval(() => {
-    if (eng.done || eng.idx === -1) {
+    const finished = eng.done || eng.idx === -1;
+    if (finished) {
       clearInterval(eng._autoFinishId); eng._autoFinishId = null;
       setSkipAnimations(false);
       draw();
@@ -212,9 +219,9 @@ async function waitForClick(eng) {
 
 function getIdleSummary(panelId) {
   if (panelId === 'write-step-panel') {
-    const w = getSelectedWriteConcern() || 'majority';
-    const j = getSelectedJournal() || 'false';
-    return TEXTS.configSummary.write(w, j, state.doc.latestId);
+    const wVal = getSelectedWriteConcern() || 'majority';
+    const jVal = getSelectedJournal() || 'false';
+    return TEXTS.configSummary.write(wVal, jVal, state.doc.latestId);
   }
   if (panelId === 'read-step-panel') {
     const rc = getSelectedReadConcern() || 'local';
@@ -225,16 +232,16 @@ function getIdleSummary(panelId) {
 }
 
 function showIdlePanel(panelId, ids) {
-  const s = getIdleSummary(panelId);
+  const summary = getIdleSummary(panelId);
   document.getElementById(ids.badge).textContent = '';
-  document.getElementById(ids.title).textContent = s.title;
+  document.getElementById(ids.title).textContent = summary.title;
   const explainEl = document.getElementById(ids.explain);
   const prevDetails = explainEl.querySelector('.step-details');
   const wasOpen = prevDetails ? prevDetails.open : true;
   explainEl.innerHTML =
     `<details class="step-details"${wasOpen ? ' open' : ''}>` +
     `<summary class="step-details-toggle">Details</summary>` +
-    `<div class="step-explain-body">${s.explain}</div>` +
+    `<div class="step-explain-body">${summary.explain}</div>` +
     `</details>`;
   document.getElementById(ids.dots).innerHTML = '';
 }
@@ -242,7 +249,7 @@ function showIdlePanel(panelId, ids) {
 function refreshIdlePanels() {
   for (const [panelId, ids] of Object.entries(PANEL_EL_IDS)) {
     const eng = panelId === 'write-step-panel' ? writeEngine : readEngine;
-    if (eng.idx === -1 || (eng.done && eng.steps.length === 0)) {
+    if (isEngineEmpty(eng)) {
       showIdlePanel(panelId, ids);
     }
   }
@@ -268,9 +275,9 @@ function renderStepExplain(explainEl, html, defaultOpen) {
 function renderStepDots(dotsEl, steps, currentIdx) {
   dotsEl.innerHTML = '';
   steps.forEach((_, j) => {
-    const d = document.createElement('div');
-    d.className = 'step-dot' + (j < currentIdx ? ' done' : j === currentIdx ? ' current' : '');
-    dotsEl.appendChild(d);
+    const dot = document.createElement('div');
+    dot.className = 'step-dot' + (j < currentIdx ? ' done' : j === currentIdx ? ' current' : '');
+    dotsEl.appendChild(dot);
   });
 }
 
@@ -278,12 +285,13 @@ function showStepPanel(i, eng, panelId) {
   const ids = PANEL_EL_IDS[panelId];
   if (!ids) return;
   const isWritePanel = panelId === 'write-step-panel';
-  if (i < 0 || eng.steps.length === 0) {
+  const noStepsToShow = i < 0 || eng.steps.length === 0;
+  if (noStepsToShow) {
     showIdlePanel(panelId, ids);
     if (isWritePanel) renderPhaseTrail(eng);
     return;
   }
-  const s = eng.steps[i];
+  const step = eng.steps[i];
   const hasPhaseTrail = isWritePanel && eng._machine && typeof eng._machine.getProgress === 'function';
   if (hasPhaseTrail) {
     document.getElementById(ids.badge).textContent = '';
@@ -292,8 +300,8 @@ function showStepPanel(i, eng, panelId) {
     document.getElementById(ids.badge).textContent = `Step ${i+1} of ${eng.steps.length}`;
     if (isWritePanel) renderPhaseTrail(eng);
   }
-  document.getElementById(ids.title).textContent = s.title;
-  renderStepExplain(document.getElementById(ids.explain), s.explain, false);
+  document.getElementById(ids.title).textContent = step.title;
+  renderStepExplain(document.getElementById(ids.explain), step.explain, false);
   if (hasPhaseTrail) document.getElementById(ids.dots).innerHTML = '';
   else renderStepDots(document.getElementById(ids.dots), eng.steps, i);
 }
@@ -367,16 +375,16 @@ function buildMajorityPhases(p, done, errored) {
 }
 
 function buildPhases(eng) {
-  if (eng.idx < 0 || eng.steps.length === 0) return null;
-  const m = eng._machine;
-  if (!m || typeof m.getProgress !== 'function') return null;
-  const p = m.getProgress();
+  if (isEngineEmpty(eng)) return null;
+  const machine = eng._machine;
+  if (!machine || typeof machine.getProgress !== 'function') return null;
+  const progress = machine.getProgress();
   const done = eng.done;
-  const errored = p.errored;
+  const errored = progress.errored;
 
-  if (p.w === 0) return buildFireForgetPhases(p, done, errored);
-  if (p.secsNeeded <= 0) return buildW1Phases(p, done, errored);
-  return buildMajorityPhases(p, done, errored);
+  if (progress.w === 0) return buildFireForgetPhases(progress, done, errored);
+  if (progress.secsNeeded <= 0) return buildW1Phases(progress, done, errored);
+  return buildMajorityPhases(progress, done, errored);
 }
 
 function sendState(p, done) {
@@ -385,12 +393,14 @@ function sendState(p, done) {
 }
 
 function primaryState(p, done, errored) {
-  if (errored && (p.phase === 'done') && !(['repl', 'fireForget'].includes(p.phase))) {
-    // Error during primary phase
-    if (p.phase === 'done' && p.replicated === 0 && !p.acked) return 'error';
-  }
-  if (done || ['repl', 'fireForget'].includes(p.phase) || (p.phase === 'done' && (p.acked || p.replicated > 0))) return 'done';
-  if (p.phase === 'primaryMem' || p.phase === 'primaryJournal') return 'active';
+  const passedPrimary = ['repl', 'fireForget'].includes(p.phase);
+  const completedWithProgress = p.phase === 'done' && (p.acked || p.replicated > 0);
+  const failedDuringPrimary = errored && p.phase === 'done' && p.replicated === 0 && !p.acked;
+  const inPrimaryPhase = p.phase === 'primaryMem' || p.phase === 'primaryJournal';
+
+  if (failedDuringPrimary) return 'error';
+  if (done || passedPrimary || completedWithProgress) return 'done';
+  if (inPrimaryPhase) return 'active';
   if (p.phase === 'done' && errored) return 'error';
   return 'pending';
 }
@@ -403,9 +413,9 @@ function arrayMachine(steps) {
     get isDone() { return i >= steps.length; },
     nextStep() {
       if (i >= steps.length) return null;
-      const s = steps[i++];
-      this.history.push(s);
-      return s;
+      const step = steps[i++];
+      this.history.push(step);
+      return step;
     },
   };
 }

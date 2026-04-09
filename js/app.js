@@ -4,15 +4,15 @@
 function syncWBadge() {
   const badge = document.getElementById('w-default-pill');
   if (!badge) return;
-  const w = getSelectedWriteConcern();
-  if (w === 'majority') {
+  const wVal = getSelectedWriteConcern();
+  if (wVal === 'majority') {
     badge.className = 'config-badge config-badge-ok';
     badge.textContent = '✓ DEFAULT';
     badge.setAttribute('data-tip', TEXTS.badge.default);
   } else {
     badge.className = 'config-badge config-badge-warn';
     badge.textContent = '⚠ NON-DEFAULT';
-    badge.setAttribute('data-tip', TEXTS.badge.nonDefault(w));
+    badge.setAttribute('data-tip', TEXTS.badge.nonDefault(wVal));
   }
 }
 document.getElementById('sel-w').addEventListener('change', syncWBadge);
@@ -24,8 +24,8 @@ function handleWrite() {
   if (isEngineActive(readEngine) || isEngineActive(writeEngine)) return;
   resetWriteVisual();
   draw();
-  const w  = getSelectedWriteConcern();
-  const wResolved = w === 'majority' ? 'majority' : parseInt(w, 10);
+  const wVal  = getSelectedWriteConcern();
+  const wResolved = wVal === 'majority' ? 'majority' : parseInt(wVal, 10);
   const journalRequired = isJournalRequired();
   log(`\u2500\u2500\u2500 Write: w:${wResolved}, j:${journalRequired} \u2500\u2500\u2500`, 'info');
   runMachine(createWriteMachine(wResolved, journalRequired), writeEngine, 'write-step-panel');
@@ -54,7 +54,7 @@ function handleSnapshotStart() {
 }
 
 function handleSnapshotReadAgain() {
-  if (!state.readClient.sessionActive || state.readClient.sessionSnapshotId === null) return;
+  if (!hasActiveSnapshotSession()) return;
   if (isEngineActive(readEngine)) return;
   resetReadVisual({ clearSession: false });
   draw();
@@ -213,27 +213,27 @@ function cycleClientTarget(clientKey) {
 let dragging = null; // { key: 'write'|'read', offsetX, offsetY }
 
 function handleNodeClick(nodeKey) {
-  const n = state.nodes[nodeKey];
-  n.alive = !n.alive;
+  const node = state.nodes[nodeKey];
+  node.alive = !node.alive;
   const writeActive = isEngineActive(writeEngine);
-  if (!n.alive) {
-    const hadUnjournaledData = n.memoryVersion > n.journalVersion;
+  if (!node.alive) {
+    const hadUnjournaledData = node.memoryVersion > node.journalVersion;
     crashNode(nodeKey);
-    log(`${n.label} taken down \u2014 memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${n.journalVersion || 'none'}).`, 'warn');
+    log(`${node.label} taken down \u2014 memory lost${hadUnjournaledData ? ' (unjournaled data lost!)' : ''}, journal preserved (v${node.journalVersion || 'none'}).`, 'warn');
   } else {
-    const recoveredVersion = n.journalVersion;
+    const recoveredVersion = node.journalVersion;
     recoverNode(nodeKey);
     const synced = syncRejoiningNode(nodeKey);
-    n.phase = 'recovering';
+    node.phase = 'recovering';
     draw();
-    if (synced && n.memoryVersion > recoveredVersion) {
-      log(`${n.label} recovering \u2014 caught up to v${n.memoryVersion} from primary.`, 'ok');
+    if (synced && node.memoryVersion > recoveredVersion) {
+      log(`${node.label} recovering \u2014 caught up to v${node.memoryVersion} from primary.`, 'ok');
     } else if (recoveredVersion > 0) {
-      log(`${n.label} recovering from journal \u2014 restored to v${recoveredVersion}.`, 'ok');
+      log(`${node.label} recovering from journal \u2014 restored to v${recoveredVersion}.`, 'ok');
     } else {
-      log(`${n.label} restarted with empty state.`, 'info');
+      log(`${node.label} restarted with empty state.`, 'info');
     }
-    setTimeout(() => { if (n.alive) { n.phase = 'idle'; draw(); syncButtons(); } }, PAUSE_RECOVERY_MS);
+    setTimeout(() => { if (node.alive) { node.phase = 'idle'; draw(); syncButtons(); } }, PAUSE_RECOVERY_MS);
   }
   if (!writeActive) resetWriteVisual();
   resetReadVisual();
@@ -257,7 +257,7 @@ function handleClientLinkClick(clientKey) {
   if (clientKey === 'wp') {
     state.links.wp = !state.links.wp;
     log(`Writer \u2192 Primary: ${state.links.wp ? 'connected' : 'disconnected'}.`, state.links.wp ? 'ok' : 'warn');
-    if (!state.links.wp && !writeEngine.done && writeEngine.idx >= 0 && !writeEngine.aborted) {
+    if (!state.links.wp && isEngineActive(writeEngine)) {
       abortEngine(writeEngine);
       state.writeClient.phase = 'error';
       log('\u26A1 Writer connection interrupted \u2014 write timeout.', 'err');
@@ -265,7 +265,7 @@ function handleClientLinkClick(clientKey) {
   } else if (clientKey === 'rp') {
     state.links.rp = !state.links.rp;
     log(`Reader connection: ${state.links.rp ? 'connected' : 'disconnected'}.`, state.links.rp ? 'ok' : 'warn');
-    if (!state.links.rp && !readEngine.done && readEngine.idx >= 0 && !readEngine.aborted) {
+    if (!state.links.rp && isEngineActive(readEngine)) {
       abortEngine(readEngine);
       state.readClient.phase = 'error';
       log('\u26A1 Reader connection interrupted \u2014 read timeout.', 'err');
@@ -275,7 +275,7 @@ function handleClientLinkClick(clientKey) {
 
 function handleCanvasClick(hit) {
   if (!hit) return;
-  if (isTopologyLocked() && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return;
+  if (isTopologyLocked() && isTopologyTarget(hit)) return;
 
   if (hit.type === 'node')       handleNodeClick(hit.key);
   else if (hit.type === 'link')  handleLinkClick(hit.key);
@@ -289,17 +289,17 @@ canvas.addEventListener('mousedown', e => {
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const hit = hitTest(mx, my);
   if (hit && hit.type === 'client') {
-    const c = hit.key === 'write' ? state.writeClient : state.readClient;
-    dragging = { key: hit.key, offsetX: mx - c.x, offsetY: my - c.y, moved: false };
+    const client = hit.key === 'write' ? state.writeClient : state.readClient;
+    dragging = { key: hit.key, offsetX: mx - client.x, offsetY: my - client.y, moved: false };
     canvas.style.cursor = 'grabbing';
     e.preventDefault();
   }
 });
 
 function handleCanvasDrag(mx, my) {
-  const c = dragging.key === 'write' ? state.writeClient : state.readClient;
-  c.x = Math.max(CLIENT_RADIUS, Math.min(canvasW - CLIENT_RADIUS, mx - dragging.offsetX));
-  c.y = Math.max(CLIENT_RADIUS, Math.min(canvasH - CLIENT_RADIUS, my - dragging.offsetY));
+  const client = dragging.key === 'write' ? state.writeClient : state.readClient;
+  client.x = Math.max(CLIENT_RADIUS, Math.min(canvasW - CLIENT_RADIUS, mx - dragging.offsetX));
+  client.y = Math.max(CLIENT_RADIUS, Math.min(canvasH - CLIENT_RADIUS, my - dragging.offsetY));
   clientDragged[dragging.key] = true;
   dragging.moved = true;
   canvas.style.cursor = 'grabbing';
@@ -308,7 +308,7 @@ function handleCanvasDrag(mx, my) {
 
 function cursorForHit(hit) {
   if (hit && hit.type === 'client') return 'grab';
-  if (isTopologyLocked() && hit && (hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink')) return 'not-allowed';
+  if (isTopologyLocked() && hit && isTopologyTarget(hit)) return 'not-allowed';
   if (hit && hit.type === 'lockBanner') return 'help';
   return hit ? 'pointer' : 'default';
 }
@@ -430,13 +430,13 @@ function initPopups() {
 // ═══════════════════════════════════════
 function applyScenario(scenario) {
   resetScenario();
-  const s = scenario.setup;
-  setSelectedWriteConcern(s.w);
-  setSelectedJournal(s.j);
-  setSelectedReadConcern(s.rc);
-  setSelectedReadPref(s.readPref);
-  if (s.links) {
-    Object.entries(s.links).forEach(([k, v]) => { state.links[k] = v; });
+  const setup = scenario.setup;
+  setSelectedWriteConcern(setup.w);
+  setSelectedJournal(setup.j);
+  setSelectedReadConcern(setup.rc);
+  setSelectedReadPref(setup.readPref);
+  if (setup.links) {
+    Object.entries(setup.links).forEach(([k, v]) => { state.links[k] = v; });
   }
   syncWBadge();
   syncTooltips();
@@ -512,13 +512,13 @@ const DEBUG_ELEMENT_IDS = [
 ];
 
 function placeDomDebugBadge(overlay, el, label) {
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 && r.height === 0) return;
+  const rect = el.getBoundingClientRect();
+  if (rect.width === 0 && rect.height === 0) return;
   const badge = document.createElement('span');
   badge.className = 'dbg-badge';
   badge.textContent = label;
-  badge.style.left = (r.left + window.scrollX) + 'px';
-  badge.style.top  = (r.top  + window.scrollY) + 'px';
+  badge.style.left = (rect.left + window.scrollX) + 'px';
+  badge.style.top  = (rect.top  + window.scrollY) + 'px';
   overlay.appendChild(badge);
 }
 

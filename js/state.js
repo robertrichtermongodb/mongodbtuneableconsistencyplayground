@@ -168,6 +168,14 @@ function isNodeIsolated(nodeKey) {
   return !linkKey || !state.links[linkKey];
 }
 
+function isTopologyTarget(hit) {
+  return hit.type === 'node' || hit.type === 'link' || hit.type === 'clientLink';
+}
+
+function hasActiveSnapshotSession() {
+  return state.readClient.sessionActive && state.readClient.sessionSnapshotId !== null;
+}
+
 function getServedVersion(nodeKey, rc) {
   const node = state.nodes[nodeKey];
   if (rc === 'local' || rc === 'available') {
@@ -224,9 +232,9 @@ function advanceMajorityCommit() {
   // majority-confirmed, all prior versions are implicitly committed too, so we stop at
   // the first (highest) version that has ≥2 acks.
   for (let i = state.doc.versions.length - 1; i >= 0; i--) {
-    const v = state.doc.versions[i];
-    if (v.ackedBy.size >= majorityThreshold() && v.id > state.doc.majorityCommitId) {
-      state.doc.majorityCommitId = v.id;
+    const ver = state.doc.versions[i];
+    if (ver.ackedBy.size >= majorityThreshold() && ver.id > state.doc.majorityCommitId) {
+      state.doc.majorityCommitId = ver.id;
       break;
     }
   }
@@ -244,11 +252,11 @@ function syncRejoiningNode(nodeKey) {
   if (!state.nodes[nodeKey].alive) return false;
   if (isNodeIsolated(nodeKey)) return false;
 
-  const n = state.nodes[nodeKey];
+  const node = state.nodes[nodeKey];
   const primaryLevel = state.nodes[pk].memoryVersion;
 
-  n.memoryVersion  = primaryLevel;
-  n.journalVersion = primaryLevel;
+  node.memoryVersion  = primaryLevel;
+  node.journalVersion = primaryLevel;
 
   state.doc.versions.forEach(v => {
     if (v.id <= primaryLevel) v.ackedBy.add(nodeKey);
@@ -277,8 +285,8 @@ function resolveReadTarget(rc, readPref) {
   if (readPref === 'secondary')
     return secKeys.slice().reverse().find(k => state.nodes[k].alive) || null;
   if (readPref === 'secondaryPreferred') {
-    const s = secKeys.find(k => state.nodes[k].alive);
-    return s || (state.nodes[pk].alive ? pk : null);
+    const sec = secKeys.find(k => state.nodes[k].alive);
+    return sec || (state.nodes[pk].alive ? pk : null);
   }
   return pk;
 }
