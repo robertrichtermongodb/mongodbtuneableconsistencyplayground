@@ -118,19 +118,86 @@ describe('election — rollback of uncommitted writes', () => {
     assert.equal(s().doc.majorityCommitId, 1);
   });
 
-  it('caps node versions to majorityCommitId', async () => {
+  it('caps winning-partition node versions to majorityCommitId', async () => {
     const m = machine(1, false);
     await runMachineSteps(m, 4);
     s().nodes.primary.alive = false;
     Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
     await runSteps(electionSteps());
 
-    for (const k of Object.keys(s().nodes)) {
+    const aliveKeys = Object.keys(s().nodes).filter(k => s().nodes[k].alive);
+    for (const k of aliveKeys) {
       assert.ok(s().nodes[k].memoryVersion <= s().doc.majorityCommitId,
         `${k} memoryVersion should be capped`);
       assert.ok(s().nodes[k].journalVersion <= s().doc.majorityCommitId,
         `${k} journalVersion should be capped`);
     }
+  });
+});
+
+// ─── deferred rollback (partition election) ─────────────────────────────────
+
+describe('election — deferred rollback on partition', () => {
+  function partitionPrimary() {
+    s().links.ps1 = false;
+    s().links.ps2 = false;
+  }
+
+  it('old primary retains stale data after partition election', async () => {
+    // w:1 — stop after ACK (step 4), before async replication
+    const m = machine(1, false);
+    await runMachineSteps(m, 4);
+    assert.equal(s().nodes.primary.memoryVersion, 1);
+    assert.equal(s().doc.majorityCommitId, 0, 'v1 not yet majority-committed');
+
+    partitionPrimary();
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+
+    assert.equal(s().nodes.primary.memoryVersion, 1,
+      'isolated old primary should still have stale v1');
+    assert.equal(s().nodes.primary.journalVersion, 1,
+      'isolated old primary journal should still have stale v1');
+    assert.equal(s().doc.majorityCommitId, 0,
+      'cluster rolled back v1');
+  });
+
+  it('stale data is rolled back on reconnection via syncRejoiningNode', async () => {
+    const m = machine(1, false);
+    await runMachineSteps(m, 4);
+
+    partitionPrimary();
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+    const newPk = s().primaryKey;
+    assert.notEqual(newPk, 'primary');
+    assert.equal(s().nodes.primary.memoryVersion, 1, 'stale before reconnect');
+
+    // Restore links — simulate reconnection
+    s().links.ps1 = true;
+    s().links.ps2 = true;
+    ctx.syncRejoiningNode('primary');
+
+    assert.equal(s().nodes.primary.memoryVersion, s().nodes[newPk].memoryVersion,
+      'old primary should sync to new primary level');
+    assert.equal(s().nodes.primary.memoryVersion, 0,
+      'stale v1 should be rolled back on rejoin');
+  });
+
+  it('winning partition nodes are capped but isolated node is not', async () => {
+    // w:1 — stop after ACK, before async replication
+    const m = machine(1, false);
+    await runMachineSteps(m, 4);
+
+    partitionPrimary();
+    await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
+
+    for (const k of ['s1', 's2']) {
+      assert.ok(s().nodes[k].memoryVersion <= s().doc.majorityCommitId,
+        `${k} (winning partition) should be capped`);
+    }
+    assert.equal(s().nodes.primary.memoryVersion, 1,
+      'old primary (isolated) should NOT be capped yet');
   });
 });
 

@@ -226,14 +226,11 @@ function handleElection() {
 // reconnected node versions to the majority-committed level.
 function checkPartitionHealed() {
   const pk = state.primaryKey;
-  const priPartition = getPartition(pk);
   let healed = false;
-  for (const [k, n] of Object.entries(state.nodes)) {
-    if (k === pk || !n.alive) continue;
-    if (priPartition.has(k)) {
-      // Node is connected to primary now — cap its data to majority-committed
-      n.memoryVersion  = Math.min(n.memoryVersion  || 0, state.doc.majorityCommitId);
-      n.journalVersion = Math.min(n.journalVersion || 0, state.doc.majorityCommitId);
+  for (const k of Object.keys(state.nodes)) {
+    if (k === pk || !state.nodes[k].alive) continue;
+    const before = state.nodes[k].memoryVersion;
+    if (syncRejoiningNode(k) && state.nodes[k].memoryVersion !== before) {
       healed = true;
     }
   }
@@ -338,9 +335,12 @@ function handleCanvasClick(hit) {
     } else {
       const recoveredVersion = n.journalVersion;
       recoverNode(hit.key);
+      const synced = syncRejoiningNode(hit.key);
       n.phase = 'recovering';
       draw();
-      if (recoveredVersion > 0) {
+      if (synced && n.memoryVersion > recoveredVersion) {
+        log(`${n.label} recovering \u2014 caught up to v${n.memoryVersion} from primary.`, 'ok');
+      } else if (recoveredVersion > 0) {
         log(`${n.label} recovering from journal \u2014 restored to v${recoveredVersion}.`, 'ok');
       } else {
         log(`${n.label} restarted with empty state.`, 'info');

@@ -1,6 +1,6 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { createContext, resetState } = require('./helpers');
+const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps } = require('./helpers');
 
 const ctx = createContext();
 
@@ -390,5 +390,126 @@ describe('isNodeIsolated', () => {
     // Both secondaries are isolated from primary
     assert.equal(ctx.isNodeIsolated('s1'), true);
     assert.equal(ctx.isNodeIsolated('s2'), true);
+  });
+});
+
+// ─── syncRejoiningNode — oplog catch-up on rejoin ───────────────────────────
+
+function machine(w, j) { return ctx.createWriteMachine(w, j); }
+const s = () => ctx.state;
+
+describe('syncRejoiningNode — catches up a node that missed writes while down', () => {
+  it('syncs S2 to majorityCommitId after revival', async () => {
+    s().nodes.s2.alive = false;
+    ctx.crashNode('s2');
+
+    await runMachineToEnd(machine('majority', false));
+    assert.equal(s().doc.majorityCommitId, 1);
+    assert.equal(s().nodes.s2.memoryVersion, 0);
+    assert.equal(s().nodes.s2.journalVersion, 0);
+
+    s().nodes.s2.alive = true;
+    ctx.recoverNode('s2');
+    const synced = ctx.syncRejoiningNode('s2');
+
+    assert.equal(synced, true);
+    assert.equal(s().nodes.s2.memoryVersion, 1);
+    assert.equal(s().nodes.s2.journalVersion, 1);
+    const v1 = s().doc.versions.find(v => v.id === 1);
+    assert.ok(v1.ackedBy.has('s2'), 's2 should be in ack set after catch-up');
+  });
+
+  it('catches up to primary level even when majorityCommitId is 0 (w:0 scenario)', async () => {
+    s().nodes.s1.alive = false;
+    ctx.crashNode('s1');
+    s().nodes.s2.alive = false;
+    ctx.crashNode('s2');
+
+    await runMachineToEnd(machine(0, false));
+    assert.equal(s().nodes.primary.memoryVersion, 1);
+    assert.equal(s().doc.majorityCommitId, 0, 'w:0 with no secondaries cannot majority-commit');
+
+    s().nodes.s1.alive = true;
+    ctx.recoverNode('s1');
+    const synced = ctx.syncRejoiningNode('s1');
+
+    assert.equal(synced, true);
+    assert.equal(s().nodes.s1.memoryVersion, 1, 'should catch up to primary level');
+    assert.equal(s().nodes.s1.journalVersion, 1);
+    assert.equal(s().doc.majorityCommitId, 1, 'should advance majorityCommit now that 2 nodes have v1');
+  });
+
+  it('does not sync when primary is dead', () => {
+    s().nodes.primary.alive = false;
+    const synced = ctx.syncRejoiningNode('s1');
+    assert.equal(synced, false);
+  });
+
+  it('does not sync a node still isolated from primary (link down)', async () => {
+    s().links.ps2 = false;
+    await runMachineToEnd(machine('majority', false));
+    assert.equal(s().doc.majorityCommitId, 1);
+
+    const synced = ctx.syncRejoiningNode('s2');
+    assert.equal(synced, false);
+    assert.equal(s().nodes.s2.memoryVersion, 0, 'isolated node should not sync');
+  });
+
+  it('caps down a node with stale data beyond primary level', () => {
+    s().nodes.primary.memoryVersion = 1;
+    s().nodes.primary.journalVersion = 1;
+    s().nodes.s1.memoryVersion = 3;
+    s().nodes.s1.journalVersion = 3;
+    s().doc.majorityCommitId = 1;
+    s().doc.versions = [
+      { id: 1, op: 'insert', ackedBy: new Set(['primary', 's2']) },
+    ];
+
+    const synced = ctx.syncRejoiningNode('s1');
+    assert.equal(synced, true);
+    assert.equal(s().nodes.s1.memoryVersion, 1, 'should cap down to primary level');
+    assert.equal(s().nodes.s1.journalVersion, 1);
+  });
+
+  it('is idempotent — second call is a no-op', async () => {
+    s().nodes.s2.alive = false;
+    ctx.crashNode('s2');
+    await runMachineToEnd(machine('majority', false));
+    s().nodes.s2.alive = true;
+    ctx.recoverNode('s2');
+
+    ctx.syncRejoiningNode('s2');
+    const mem1 = s().nodes.s2.memoryVersion;
+    const jrn1 = s().nodes.s2.journalVersion;
+    ctx.syncRejoiningNode('s2');
+    assert.equal(s().nodes.s2.memoryVersion, mem1);
+    assert.equal(s().nodes.s2.journalVersion, jrn1);
+  });
+
+  it('does not sync the current primary to itself', () => {
+    s().nodes.primary.memoryVersion = 5;
+    s().doc.majorityCommitId = 3;
+    const synced = ctx.syncRejoiningNode('primary');
+    assert.equal(synced, false);
+    assert.equal(s().nodes.primary.memoryVersion, 5, 'primary unchanged');
+  });
+
+  it('syncs old primary after election (now a secondary)', async () => {
+    await runMachineToEnd(machine('majority', false));
+    assert.equal(s().doc.majorityCommitId, 1);
+
+    s().nodes.primary.alive = false;
+    ctx.crashNode('primary');
+    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    await runSteps(ctx.buildElectionSteps());
+    assert.notEqual(s().primaryKey, 'primary');
+
+    s().nodes.primary.alive = true;
+    ctx.recoverNode('primary');
+
+    const synced = ctx.syncRejoiningNode('primary');
+    assert.equal(synced, true);
+    assert.equal(s().nodes.primary.memoryVersion, s().doc.majorityCommitId);
+    assert.equal(s().nodes.primary.journalVersion, s().doc.majorityCommitId);
   });
 });

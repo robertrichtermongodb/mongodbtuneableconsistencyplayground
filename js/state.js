@@ -199,6 +199,33 @@ function advanceMajorityCommit() {
   }
 }
 
+// Oplog catch-up / rollback on rejoin — called when a secondary reconnects to
+// the primary (node revived or link restored). Syncs the node to the primary's
+// current data level: catches UP if the node fell behind, caps DOWN if it held
+// stale data beyond what the primary has (post-election rollback).
+// Also advances majorityCommitId when the new ack creates a majority.
+function syncRejoiningNode(nodeKey) {
+  const pk = state.primaryKey;
+  if (nodeKey === pk) return false;
+  if (!state.nodes[pk].alive) return false;
+  if (!state.nodes[nodeKey].alive) return false;
+  if (isNodeIsolated(nodeKey)) return false;
+
+  const n = state.nodes[nodeKey];
+  const primaryLevel = state.nodes[pk].memoryVersion;
+
+  n.memoryVersion  = primaryLevel;
+  n.journalVersion = primaryLevel;
+
+  state.doc.versions.forEach(v => {
+    if (v.id <= primaryLevel) v.ackedBy.add(nodeKey);
+    else v.ackedBy.delete(nodeKey);
+  });
+  advanceMajorityCommit();
+
+  return true;
+}
+
 // Resolves which node should serve a read given rc and readPreference.
 // Lives here (not simulation.js) because both draw.js and simulation.js need it.
 function resolveReadTarget(rc, readPref) {

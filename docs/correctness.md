@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Last updated 2026-04-09 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 20.*
+*Last updated 2026-04-09 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 22.*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -81,6 +81,7 @@ This document separates simulation behaviors into four categories:
 | Crash before journal flush loses unjournaled writes | state.js `crashNode` | Acks above `journalVersion` retracted, `majorityCommitId` recomputed. |
 | Recovery from journal on restart | state.js `recoverNode` | `memoryVersion = journalVersion`. |
 | Node enters recovering phase on restart | app.js | 600ms `recovering` phase before returning to idle. |
+| Rejoining node catches up to committed level | state.js, app.js | `syncRejoiningNode()` advances node to `majorityCommitId` on revival or link restoration, adds acks. Models oplog catch-up. |
 
 ### Other
 
@@ -97,9 +98,9 @@ This document separates simulation behaviors into four categories:
 | Split-brain: w:1 succeeds on partitioned primary | simulation.js | Partitioned primary has `reachableCount=1 >= 1`, write succeeds locally. |
 | Split-brain: w:majority fails on partitioned primary | simulation.js | Partitioned primary has `reachableCount=1 < 2`, cannot achieve write concern. |
 | Split-brain: partition-aware election in secondary majority | simulation.js | `buildElectionSteps({ forcePartition: true })` uses `getPartition()` to find majority partition among connected secondaries. |
-| Split-brain: old primary steps down instantly on force election | simulation.js | Old primary becomes a secondary; writes route to new primary. No "danger zone" stale writes — simplified for pedagogical clarity. |
+| Split-brain: old primary steps down with stale data retained | simulation.js | Old primary becomes a secondary but keeps its stale data (visible via amber badge). Rollback deferred until reconnection via `syncRejoiningNode()`. |
 | Split-brain: isolated nodes detected dynamically | state.js, draw.js | `isNodeIsolated()` checks if a node can reach the primary. Isolated nodes get amber dashed ring + "(isolated)" label. |
-| Split-brain: partition healing caps versions | app.js | `checkPartitionHealed()` caps reconnected node versions to majority-committed level, logs healing. |
+| Split-brain: partition healing syncs versions | state.js, app.js | `syncRejoiningNode()` clamps reconnected node data to majority-committed level (catch-up or rollback). Called on node revival and link restoration. |
 | Triangle topology with S1↔S2 link | state.js, draw.js | All 3 inter-node links modeled (`ps1`, `ps2`, `s1s2`); triangle layout. S1↔S2 visually distinct (thinner, shorter dash) with "heartbeat only" tooltip. |
 | Secondary↔secondary link visual is role-based | draw.js | `isSecSec` checks `aKey !== primaryKey && bKey !== primaryKey`, not link key — correct after election when roles swap. |
 | Client targeting: manual node selection | state.js, app.js | Click client circle to cycle `targetNode` through all nodes. `effectiveWriteTarget` and `resolveReadTarget` respect override. |
@@ -191,7 +192,7 @@ This document separates simulation behaviors into four categories:
 | P2 | Replication parallelism | Required secondaries replicate sequentially | Oplog tailing is parallel | Sequential is necessary for step-by-step pedagogy |
 | P3 | j:true mechanism | Two-step model: memory apply → journal flush, with ack gated on flush | Each counted node flushes journal before its ack counts | Now visually distinct: separate memory and journal steps per node |
 | P4 | Majority-commit tracking | Single global `majorityCommitId` | Each node tracks its own majority-commit view | Global value is correct for primary; secondary lag is not modeled |
-| P5 | Election rollback scope | All nodes capped to `majorityCommitId` | Only old primary rolls back when it rejoins | End result is correct for the educational narrative |
+| P5 | Election rollback scope | Winning-partition nodes capped; isolated old primary keeps stale data until `syncRejoiningNode()` on reconnect | Old primary rolls back on rejoin | Deferred rollback matches real MongoDB; amber badge signals stale state |
 | P6 | rc:linearizable mechanism | Ping/ack round-trip to secondaries | No-op write with w:majority | Same outcome: confirms primary can still achieve majority |
 | P7 | rc:linearizable single-doc restriction | Not enforced | Must uniquely identify one document | Only one document exists in the simulator |
 | P8 | Oplog ack vs query visibility | Ack and visibility simultaneous | MongoDB 8.0+: oplog ack durable, collection apply async | Hard to show in a single-doc model |
@@ -213,7 +214,7 @@ This document separates simulation behaviors into four categories:
 | M6 | **readPreference tag sets** | Route reads by tag criteria | Out of scope for 3-node sim |
 | M7 | **Oplog/collection apply gap (8.0+)** | Secondary may ack oplog before applying to collections | Would need two-phase secondary model |
 | M8 | **writeConcernMajorityJournalDefault toggle** | Controls whether w:majority implies journaling | Simulator hardcodes the default (true) |
-| M9 | **Old primary rejoin as secondary** | Old primary rolls back, syncs, rejoins | Toggling old primary on doesn't trigger rollback/sync |
+| M9 | **Old primary rejoin as secondary** | Old primary rolls back, syncs, rejoins | Modeled: isolated old primary retains stale data after partition election. On reconnection, `syncRejoiningNode()` performs the rollback and catches up to the new primary's level. |
 | M10 | **Reconfiguration (rs.reconfig)** | Changes voting membership for recovery | Not modeled |
 | M11 | **Multi-document transactions** | Atomic operations across multiple documents | Single-doc only |
 | M12 | **Arbiter nodes** | Non-data-bearing voting members | Fixed P-S-S topology |
@@ -224,7 +225,7 @@ This document separates simulation behaviors into four categories:
 
 | Category | Count |
 |---|---|
-| Correct | ~54 behaviors (13 write concern + 13 read concern + 4 read preference + 4 election + 8 storage-layer + 12 split-brain/topology/targeting/messaging) |
+| Correct | ~55 behaviors (13 write concern + 13 read concern + 4 read preference + 4 election + 9 storage-layer + 12 split-brain/topology/targeting/messaging) |
 | ~~Incorrect~~ Fixed | 7 of 8 (I6 deferred as known limitation) |
 | Imprecise | 11 |
-| Missing | 12 (M1 partially addressed) |
+| Missing | 12 (M1 partially addressed, M9 modeled) |

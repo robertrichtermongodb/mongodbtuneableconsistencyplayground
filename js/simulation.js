@@ -635,9 +635,15 @@ function buildElectionSteps(opts) {
 
       state.doc.versions = state.doc.versions.filter(v => v.id <= state.doc.majorityCommitId);
       state.doc.latestId = state.doc.majorityCommitId;
-      Object.values(state.nodes).forEach(n => {
-        n.memoryVersion  = Math.min(n.memoryVersion  || 0, state.doc.majorityCommitId);
-        n.journalVersion = Math.min(n.journalVersion || 0, state.doc.majorityCommitId);
+
+      // Only cap nodes in the winning partition — the isolated old primary
+      // keeps its stale data until it reconnects (deferred rollback, like real MongoDB).
+      const winPartition = getPartition(winner);
+      Object.entries(state.nodes).forEach(([k, n]) => {
+        if (winPartition.has(k)) {
+          n.memoryVersion  = Math.min(n.memoryVersion  || 0, state.doc.majorityCommitId);
+          n.journalVersion = Math.min(n.journalVersion || 0, state.doc.majorityCommitId);
+        }
       });
 
       if (state.readClient.sessionActive &&
@@ -650,7 +656,12 @@ function buildElectionSteps(opts) {
       Object.values(state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
 
       if (uncommitted.length > 0) {
-        log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} removed from uncommitted nodes.`, 'warn');
+        const staleHolder = forcePartition ? state.nodes[oldPk] : null;
+        if (staleHolder && staleHolder.memoryVersion > state.doc.majorityCommitId) {
+          log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} not majority-committed. Old primary retains stale data until it reconnects.`, 'warn');
+        } else {
+          log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} not majority-committed \u2014 rolled back.`, 'warn');
+        }
       }
       if (forcePartition) {
         log(`${oldLabel} is now Primary. Old primary stepped down and is isolated.`, 'warn');
