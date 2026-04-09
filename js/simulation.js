@@ -473,7 +473,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     steps.push({
       ...TEXTS.read.linearizableCheck,
       run: async () => {
-        const liveSecs = Object.keys(state.nodes).filter(k => k !== state.primaryKey && isReachableForWrite(k));
+        const liveSecs = Object.keys(state.nodes).filter(k => k !== state.primaryKey && isReachableFromPrimary(k));
         if (liveSecs.length === 0) { await delay(300); return; }
         await Promise.all(liveSecs.map(k => {
           if (!state.nodes[k].alive) return Promise.resolve();
@@ -489,7 +489,7 @@ function buildReadSteps(rc, readPref, snapshotOverrideId = null) {
     steps.push({
       ...TEXTS.read.linearizableEval,
       run: async () => {
-        const runtimeReachable = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
+        const runtimeReachable = Object.keys(state.nodes).filter(k => isReachableFromPrimary(k)).length;
         if (runtimeReachable < 2) {
           state.readClient.phase = 'error';
           state.readClient.errorReason = 'linearizable';

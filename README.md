@@ -13,14 +13,16 @@ css/style.css     — all CSS (variables driven by theme)
 js/
   theme.js        — dark/light design tokens, CSS variable injection
   state.js        — shared state, doc helpers, read target resolution
+  logger.js       — log() function (separated to break circular dep)
+  icons.js        — SVG Path2D constants
   texts.js        — all user-facing strings (step titles, tooltips, explanations)
-  simulation.js   — write machine, read steps, election steps
-  engine.js       — step engines, button sync, panel display
   draw.js         — canvas rendering, hit testing, layout, consistency overlays
+  engine.js       — step engines, button sync, panel display
+  simulation.js   — write machine, read steps, election steps
   app.js          — custom tooltips, config badge, event handlers, popup logic, init
 test/
   helpers.js      — VM-based test harness with browser stubs
-  *.test.js       — 122 tests across state, writes, reads, elections
+  *.test.js       — ~119 tests across state, writes, reads, elections, topology locking
 ```
 
 The simulator models a 3-node Primary-Secondary-Secondary replica set in a triangle topology. Each node tracks `memoryVersion` (volatile) and `journalVersion` (crash-safe). Writes flow through a lazy state machine that evaluates live topology on each step, dynamically retargeting when nodes crash or links partition mid-operation.

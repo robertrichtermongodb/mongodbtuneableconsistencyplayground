@@ -1,6 +1,6 @@
 # Correctness Assessment — MongoDB Concerns Playground
 
-*Last updated 2026-04-08 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 19.*
+*Last updated 2026-04-09 against the official MongoDB documentation (MongoDB 8.0). Reflects Iteration 20.*
 *Reference sources: `docs/research.md`, `docs/mongodb-read-write-concerns.md`.*
 
 This document separates simulation behaviors into four categories:
@@ -26,10 +26,11 @@ This document separates simulation behaviors into four categories:
 | w:majority — primary + 1 secondary (majority=2) | `createWriteMachine` | Matches majority calculation for 3-node P-S-S. |
 | w:majority + j:false — fully durable on default config | `createWriteMachine` | Explain text notes `writeConcernMajorityJournalDefault:true` overrides client j. |
 | Unachievable write concern blocks; write NOT rolled back | `createWriteMachine` | Explain text correctly describes wtimeout behavior. |
-| Dynamic topology adaptation during write | `createWriteMachine` | Machine re-evaluates live node liveness and link state on each `nextStep()` call, retargeting surviving secondaries when a node crashes or partitions mid-replication. |
+| Dynamic topology adaptation during write | `createWriteMachine` | Machine re-evaluates live node liveness and link state on each `nextStep()` call. Topology is locked during execution so the machine assumes stable topology throughout. |
 | Primary always journals before replication | `createWriteMachine` | Primary memory → journal → replication, regardless of j setting. For j:false, the ack counts on memory apply but the journal still happens before any secondary receives data. |
 | j:false interleaves secondary journal per node | `createWriteMachine` | Each secondary completes memory apply + journal flush before the next secondary starts, avoiding misleading batch visualization. |
-| Primary bounce detection (data loss) | `createWriteMachine` | `primaryHasData()` detects when a restarted primary lost unjournaled data. Handles both pre-ACK (write fails) and post-ACK (async work aborted, "Acknowledged but LOST" state). |
+| w:majority is the default write concern since MongoDB 5.0 | texts.js, index.html | UI defaults `sel-w` to majority; badge, tooltips, and safety notes reference this. |
+| Primary data loss detection | `createWriteMachine`, draw.js | `failWrite()` handles pre-topology errors (writer disconnected, target not primary, target down). "Acknowledged but LOST" UI state detected in draw.js consistency views. |
 | "Acknowledged but LOST" UI state | `draw.js` | Detects `writeClient.phase === 'received' && ackCount === 0 && !committed` and displays explicit data-loss warning. |
 
 ### Read concerns
@@ -39,7 +40,7 @@ This document separates simulation behaviors into four categories:
 | rc:local returns node's current in-memory state | state.js `getServedVersion` | Returns `node.memoryVersion`, flags dirty if above `majorityCommitId`. |
 | rc:available = rc:local on replica sets | state.js | Same code path. Correct per docs. |
 | rc:majority returns majority-commit point (capped by node) | state.js | Returns `min(majorityCommitId, node.memoryVersion)` — a node can only serve data it has replicated. |
-| rc:majority frozen when commit point can't advance | simulation.js | Detects `<2 reachable nodes`, returns frozen value. |
+| rc:majority frozen when commit point can't advance | simulation.js | Detects primary down or primary in minority partition (`!majorityOk`), returns frozen value. |
 | rc:majority frozen reads are stale but rollback-safe | simulation.js | Explain text distinguishes causal vs non-causal. |
 | rc:linearizable forces primary regardless of readPreference | state.js `resolveReadTarget` | Hardcoded `return pk`. |
 | rc:linearizable — primary confirms leadership before serving | simulation.js | Pings secondaries and waits for acks. Runtime topology evaluation. |
@@ -196,7 +197,7 @@ This document separates simulation behaviors into four categories:
 | P8 | Oplog ack vs query visibility | Ack and visibility simultaneous | MongoDB 8.0+: oplog ack durable, collection apply async | Hard to show in a single-doc model |
 | P9 | Snapshot timestamps | Integer version IDs | `atClusterTime` oplog timestamps | Functionally equivalent for single-doc model |
 | P10 | Election trigger | Manual (user clicks button) | Automatic after `electionTimeoutMillis` (10s default) | Acceptable for step-by-step pedagogy |
-| P11 | Reader network model | Single `rp` boolean for all nodes | Per-node connectivity from the client | See I5; simplification of the model |
+| P11 | Reader network model | Single `rp` boolean for all nodes | Per-node connectivity from the client | See I6; simplification of the model |
 
 ---
 

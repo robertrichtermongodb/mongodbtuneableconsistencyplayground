@@ -82,6 +82,14 @@ function isReachableForWrite(key) {
   return state.nodes[key].alive && (lk ? state.links[lk] : true);
 }
 
+// Reachability from the primary's perspective (used by linearizable reads).
+function isReachableFromPrimary(key) {
+  const pk = state.primaryKey;
+  if (key === pk) return state.nodes[key].alive;
+  const lk = getLinkBetween(pk, key);
+  return state.nodes[key].alive && (lk ? state.links[lk] : true);
+}
+
 // BFS from nodeKey over alive nodes connected by up links.
 function getPartition(nodeKey) {
   const visited = new Set();

@@ -31,17 +31,16 @@ const TEXTS = {
   dropdowns: {
     'sel-w': {
       '0':        'Write Concern (w)\n\nw:0 - Fire & forget. The client sends the write but receives no confirmation at all. It won\'t know if the write succeeded or failed. Fastest option, but zero durability guarantees.',
-      '1':        'Write Concern (w)\n\nw:1 - Primary only. The primary confirms after storing the write in memory. Fast, but if the primary crashes before copying the data to a secondary, the write is permanently lost.',
-      '2':        'Write Concern (w)\n\nw:2 - Two nodes must confirm. The write exists on at least two nodes before the client is notified, greatly reducing the chance of data loss compared to w:1.',
+      '1':        'Write Concern (w)\n\nw:1 - Primary only. The primary confirms after storing the write in memory (with j:false). Fast, but if the primary crashes before copying the data to a secondary, the write is permanently lost.',
       '3':        'Write Concern (w)\n\nw:3 - All three nodes must confirm. The write is verified on every member of the replica set. Strongest durability but highest latency since all nodes must respond.',
-      'majority': 'Write Concern (w)\n\nw:majority - A majority of nodes (2 of 3) must confirm. This is MongoDB\'s default since v5.0. The write survives any single-node failure - the standard balance of safety and performance.',
+      'majority': 'Write Concern (w)\n\nw:majority - A majority of nodes (2 of 3) must confirm. This is MongoDB\'s default since v5.0. The write survives any single-node failure - the standard balance of safety and performance.\n\nNote: In this 3-node replica set, w:majority is equivalent to w:2. Using "majority" instead of a fixed number means the threshold automatically adapts if the replica set grows.',
     },
     'sel-j': {
       'false': 'Journal (j)\n\nj:false - A node counts its confirmation when the write reaches memory. The write to disk happens shortly after (~50ms). If the node crashes before that, data in memory is lost.\n\nNote: w:majority overrides this to j:true by default (writeConcernMajorityJournalDefault).',
       'true':  'Journal (j)\n\nj:true - A node only counts its confirmation after the write is saved to disk (journal). This makes the write crash-safe before the client hears back. Adds latency but prevents data loss on node failure.',
     },
     'sel-rc': {
-      'local':        'Read Concern\n\nrc:local - Returns whatever the target node currently has, with no waiting. Fastest read, but may include data not yet confirmed by other nodes. If the primary fails, unconfirmed data could disappear (dirty read risk).',
+      'local':        'Read Concern\n\nrc:local (default) - Returns whatever the target node currently has, with no waiting. Fastest read, but may include data not yet confirmed by other nodes. If the primary fails, unconfirmed data could disappear.',
       'available':    'Read Concern\n\nrc:available - Behaves identically to rc:local on replica sets. The distinction only matters on sharded clusters, where it may return orphaned documents during chunk migrations.',
       'majority':     'Read Concern\n\nrc:majority - Returns only data confirmed by a majority of nodes. This data is guaranteed to never disappear, even if the primary fails. Recommended default - trades a small amount of freshness for strong consistency.',
       'snapshot':     'Read Concern\n\nrc:snapshot - Returns a frozen point-in-time view of majority-confirmed data. Within a session, all reads see the exact same state - no phantom reads, no changing results. Designed for multi-document transactions.',
@@ -68,7 +67,7 @@ const TEXTS = {
     'btn-read-session-end':   'Close the snapshot session. Future reads will use a fresh majority-confirmed point.',
     'btn-reset':              'Reset everything - all nodes healthy, all links connected, document cleared.',
     'btn-theme-toggle':       'Switch between dark and light theme.',
-    'btn-canvas-election':    'Trigger Election\n\nUses RAFT consensus: secondaries vote for the candidate with the most up-to-date data. A majority wins and becomes the new primary. Unconfirmed writes on the old primary are rolled back.',
+    'btn-canvas-election':    'Trigger Election\n\nUses Raft consensus: secondaries vote for the candidate with the most up-to-date data. A majority wins and becomes the new primary. Unconfirmed writes on the old primary are rolled back.',
   },
 
   readSessionActiveBadge: 'ACTIVE SESSION',
@@ -77,7 +76,11 @@ const TEXTS = {
   badge: {
     default: 'Default (since MongoDB 5.0)\n\nw:majority waits for a majority of replica set members to confirm the write to disk before acknowledging. This prevents data loss and rollback in all failure scenarios.',
     nonDefault(w) {
-      return `Non-default write concern\n\nYou are using w:${w}, which confirms before a majority of nodes have the data. If the primary fails before replication, the write can be lost - even though the client received a confirmation. MongoDB defaults to w:majority since v5.0 to prevent this.`;
+      const wNum = typeof w === 'string' ? parseInt(w, 10) : w;
+      if (wNum <= 1) {
+        return `Non-default write concern\n\nYou are using w:${w}, which confirms before a majority of nodes have the data. If the primary fails before replication, the write can be lost - even though the client received a confirmation. MongoDB defaults to w:majority since v5.0 to prevent this.`;
+      }
+      return `Non-default write concern\n\nYou are using w:${w} - all ${wNum} nodes must confirm. This is stricter than the default w:majority (2 of 3). The write won't be confirmed until every node responds, increasing latency. MongoDB defaults to w:majority since v5.0 for the right balance.`;
     },
   },
 
@@ -95,7 +98,7 @@ const TEXTS = {
           ? 'Fire-and-forget - no confirmation at all. The client won\'t know if the write succeeded.'
           : w === '1'
             ? 'Only the primary confirms - if it crashes before replicating, the data is lost.'
-            : `${w} nodes must confirm before the client is notified.`;
+            : `All ${w} nodes must confirm before the client is notified. Stricter than majority.`;
       return {
         title: `Write Client sends ${opLabel}`,
         explain: `<strong>All MongoDB writes go to the primary.</strong> The write client sends <strong>${opLabel}</strong> with ` +
@@ -112,7 +115,7 @@ const TEXTS = {
       const isLin = rc === 'linearizable';
       const vLabel = latestId > 0 ? `v${latestId} expected` : 'no data yet';
       const rcNote = {
-        local:        '<strong>rc:local</strong> - returns the node\'s current data with no waiting or coordination. Fastest, but may include data not yet confirmed by other nodes (dirty read risk).',
+        local:        '<strong>rc:local</strong> (default) - returns the node\'s current data with no waiting or coordination. Fastest, but may include data not yet confirmed by other nodes.',
         available:    '<strong>rc:available</strong> - same as rc:local on replica sets. Only differs on sharded clusters.',
         majority:     '<strong>rc:majority</strong> - returns only data confirmed by a majority of nodes. Guaranteed to never disappear, even if the primary fails.',
         snapshot:     '<strong>rc:snapshot</strong> - returns a frozen point-in-time view of majority-confirmed data. Designed for multi-document transactions.',
@@ -205,7 +208,8 @@ const TEXTS = {
             (j ? `The client is still waiting - <strong>j:true</strong> requires this disk write before the confirmation is sent.`
                : `The client is still waiting - <strong>w:majority</strong> requires a disk write before confirmation, even though you set j:false. MongoDB\u2019s default server config enforces this for majority writes.`)
           : `The primary writes <strong>${opLabel}</strong> to its <strong>on-disk journal</strong> - the data now survives a crash on this node. ` +
-            `The client already received the confirmation in the previous step because <strong>j:false</strong> doesn\u2019t require a disk write.`,
+            `The client already received the confirmation in the previous step because <strong>j:false</strong> doesn\u2019t require a disk write.` +
+            ` <em>(Simplification: in practice, journaling and replication happen concurrently - we show them sequentially for clarity.)</em>`,
       };
     },
 
@@ -262,10 +266,14 @@ const TEXTS = {
 
     wcUnsatisfied(opLabel, w, needCount, reachCount) {
       const isMajority = w === 'majority';
+      const wNum = typeof w === 'string' ? parseInt(w, 10) : w;
+      const isStricterThanMajority = !isMajority && wNum >= 3;
       const capTip = isMajority
         ? `CAP trade-off: Consistency over Availability (CP)\n\nw:majority refuses to confirm a write that isn\u2019t verified by a majority - the client is told the write failed, preventing a split-brain scenario where two partitions accept conflicting writes. In production the primary would also step down after ~10s once heartbeats confirm it has lost majority.`
+        : isStricterThanMajority
+        ? `CAP trade-off: Consistency over Availability (CP)\n\nw:${w} requires all ${wNum} nodes to confirm - even stricter than w:majority. The write blocks until every node responds or wtimeout expires.`
         : `CAP trade-off: Availability over Consistency (PA)\n\nw:${w} doesn\u2019t require majority confirmation, so the data may be rolled back if an election occurs in another partition.`;
-      const capLabel = isMajority
+      const capLabel = (isMajority || isStricterThanMajority)
         ? `<br><br><span class="cap-label" data-tip="${capTip}">\u2139 CAP: Consistency over Availability (CP)</span>`
         : `<br><br><span class="cap-label cap-label-warn" data-tip="${capTip}">\u26A0 CAP: Availability over Consistency (PA)</span>`;
       return {
@@ -296,7 +304,7 @@ const TEXTS = {
     },
 
     rcNote: {
-      local:        `<strong>rc:local</strong> - returns the node\u2019s current data with no waiting or coordination. Fastest, but may include data not yet confirmed by other nodes (dirty read risk).`,
+      local:        `<strong>rc:local</strong> (MongoDB\u2019s default) - returns the node\u2019s current data with no waiting or coordination. Fastest, but may include data not yet confirmed by other nodes.`,
       available:    `<strong>rc:available</strong> - same as rc:local on replica sets. (On sharded clusters it may return orphaned documents from migrations.)`,
       majority:     (mcId) => `<strong>rc:majority</strong> - returns only data confirmed by a majority of nodes (currently <strong>v${mcId > 0 ? mcId : 'none'}</strong>). This data will never disappear, even if the primary fails.`,
       snapshot:     (mcId) => `<strong>rc:snapshot</strong> - returns a frozen point-in-time view of majority-confirmed data (currently <strong>v${mcId > 0 ? mcId : 'none'}</strong>). Designed for multi-document transactions.`,
@@ -326,9 +334,9 @@ const TEXTS = {
         title: `Node reads local data \u2192 ${nodeLabel}${dirty ? ' \u26A0 (dirty)' : nodeLabel !== 'none' ? ' \u2713' : ''}`,
         explain: isPrimary
           ? `The primary returns its latest data: <strong>${nodeLabel}</strong>.` +
-            (dirty ? ` This is above the majority-confirmed point (v${mcId}) - <strong>dirty read risk</strong>: if the primary fails before this data reaches a majority, it could disappear and your client already saw it.` : '')
+            (dirty ? ` This is above the majority-confirmed point (v${mcId}) - <strong>uncommitted read</strong>: if the primary fails before this data reaches a majority, it could disappear and your client already saw it.` : '')
           : `The secondary returns whatever it currently has - <strong>no waiting, no coordination</strong>: <strong>${nodeLabel}</strong>.` +
-            (dirty ? ` This is above the majority-confirmed point (v${mcId}) - <strong>dirty read risk</strong>: this data could disappear if the primary fails before it\u2019s confirmed by enough nodes.`
+            (dirty ? ` This is above the majority-confirmed point (v${mcId}) - <strong>uncommitted read</strong>: this data could disappear if the primary fails before it\u2019s confirmed by enough nodes.`
                    : mcId > 0 ? ` Majority-confirmed at v${mcId}.` : ''),
       };
     },
@@ -383,7 +391,7 @@ const TEXTS = {
     linearizableReturn: {
       title: 'Data returned to client',
       explain: `With <strong>rc:linearizable</strong>, the primary returns data reflecting every majority-confirmed write up to this moment - ` +
-        `the strongest read guarantee in MongoDB. Combined with <strong>w:majority</strong> writes, reads and writes behave as if executed by a single thread.`,
+        `the strongest read guarantee in MongoDB. Combined with <strong>w:majority</strong> writes, every read reflects all preceding writes - no stale or out-of-order results.`,
     },
 
     linearizableBlocked: {
@@ -400,7 +408,7 @@ const TEXTS = {
       return {
         title: `Node prepares point-in-time snapshot \u2192 ${snapLabel}`,
         explain: sessionNote +
-          ` All reads in this transaction see the exact same data - no phantom reads, no changing results.` +
+          ` All reads in this session see the exact same data - no phantom reads, no changing results.` +
           (targetKey !== primaryKey ? ` <em>Note: on a secondary, the snapshot may lag slightly behind the primary due to replication delay.</em>` : ''),
       };
     },
@@ -431,7 +439,7 @@ const TEXTS = {
     impossible(reason) {
       return {
         title: 'Election impossible - no majority',
-        explain: `${reason} RAFT requires a <strong>majority of voting members</strong> to agree on a new primary. Bring more nodes online first.`,
+        explain: `${reason} Raft requires a <strong>majority of voting members</strong> to agree on a new primary. Bring more nodes online first.`,
       };
     },
 
@@ -439,7 +447,7 @@ const TEXTS = {
       return {
         title: `Election triggered - ${winnerLabel} campaigns`,
         explain: `Secondaries detect the primary is unreachable and start an election after <strong>electionTimeoutMillis</strong> (default 10s). ` +
-          `<em>MongoDB uses <strong>RAFT consensus</strong>: each secondary requests votes based on how up-to-date its data is. ` +
+          `<em>MongoDB uses <strong>Raft consensus</strong>: each secondary requests votes based on how up-to-date its data is. ` +
           `Peers only vote for a candidate whose data is at least as fresh as theirs, and each node votes once per term. ` +
           `The candidate that collects a majority wins.</em> ` +
           `<strong>${winnerLabel}</strong> has the most recent data (v${winnerVersion}) and qualifies as the new primary.`,
@@ -457,7 +465,7 @@ const TEXTS = {
     rollbackNote(uncommitted) {
       if (uncommitted.length === 0) return ` No unconfirmed writes - all data is safe.`;
       return ` <strong>Unconfirmed write(s) ${uncommitted.map(v => `v${v.id}`).join(', ')} are rolled back</strong> - ` +
-        `they were never confirmed by a majority, so the new primary discards them. Any client that already read these values via rc:local saw data that no longer exists.`;
+        `they were never confirmed by a majority, so the new primary discards them. Any client that already read these values via rc:local or rc:available saw data that no longer exists.`;
     },
   },
 
@@ -533,7 +541,7 @@ const TEXTS = {
 
     dirtyRead(vStr, rcVal, mcId, sessionSuffix) {
       return `<div class="cb-label">Read result: ${vStr}</div>` +
-        `<div class="cb-status cb-warn">\u25CE Dirty read - unconfirmed</div>` +
+        `<div class="cb-status cb-warn">\u25CE Uncommitted read</div>` +
         `<div class="cb-detail">rc:${rcVal} returned data above the majority-confirmed point (v${mcId || 'none'}). If the primary fails, this write could be rolled back and your client already saw it.${sessionSuffix}</div>`;
     },
 
@@ -581,8 +589,8 @@ const TEXTS = {
   // Grouped: defaults-under-stress first (the heroes), then opt-in risk.
   scenarios: [
     {
-      group: 'Defaults under pressure',
-      subtitle: 'MongoDB\u2019s default settings (w:majority + rc:majority) are designed to keep your data consistent - even when things go wrong. These scenarios show how.',
+      group: 'Consistent by default',
+      subtitle: 'MongoDB\u2019s default write concern (w:majority) paired with rc:majority protects consistency - even under failures and partitions. These scenarios show how.',
     },
     {
       id: 'safe-write',
@@ -631,7 +639,7 @@ const TEXTS = {
     },
 
     {
-      group: 'Trading safety for speed',
+      group: 'Your choice: Trading safety for speed or availability',
       subtitle: 'Sometimes you deliberately choose lower guarantees for better latency or throughput. These scenarios show the trade-offs - and help you decide when they\u2019re worth it.',
     },
     {
@@ -644,21 +652,21 @@ const TEXTS = {
         ' Compare with "Network partition" above - w:majority would have rejected the write instead.',
       next: '<strong>1.</strong> The partition is pre-configured - click <em>Set up</em>' +
         '<br><strong>2.</strong> Click <em>New doc with ID 1</em> and step through (or <em>Finish</em>) - the write "succeeds" with w:1' +
-        '<br><strong>3.</strong> Click <em>Force Election</em> - secondaries elect a new primary, old primary\u2019s write is rolled back' +
+        '<br><strong>3.</strong> Click <em>Trigger Election</em> - secondaries elect a new primary, old primary\u2019s write is rolled back' +
         '<br><strong>4.</strong> Click <em>Query doc with ID 1</em> - the data is gone',
       setup: { w: '1', j: 'false', rc: 'majority', readPref: 'primary', links: { ps1: false, ps2: false } },
     },
     {
       id: 'dirty-read',
       name: 'rc:local - lowest latency read, stale data possible',
-      what: '<strong>rc:local gives the fastest read</strong> - the node returns whatever it has right now, with no coordination or waiting.' +
+      what: '<strong>rc:local is MongoDB\u2019s default read concern</strong> and gives the fastest read - the node returns whatever it has right now, with no coordination or waiting.' +
         ' Perfect for dashboards, analytics, or any read where milliseconds matter more than perfect accuracy.' +
         ' But here\u2019s the trade-off: during a w:1 write, you can observe data on a secondary <strong>before it\u2019s been confirmed by a majority</strong>.' +
         ' If the primary were to fail at this point, that data could be rolled back - but your app already showed it to a user.' +
         ' rc:majority prevents this by waiting for data guaranteed to survive failures.',
       next: '<strong>1.</strong> Click <em>New doc with ID 1</em> and step through with <em>Next</em>' +
         '<br><strong>2.</strong> After a secondary receives the data in memory (watch the step panel), <strong>start a read</strong> with <em>Query doc with ID 1</em>' +
-        '<br><strong>3.</strong> The secondary returns v1 with a <strong>dirty read warning</strong> - majorityCommitId is still 0' +
+        '<br><strong>3.</strong> The secondary returns v1 with an <strong>uncommitted read warning</strong> - majorityCommitId is still 0' +
         '<br><strong>4.</strong> After the read finishes, continue the write with <em>Next</em> / <em>Finish</em>',
       setup: { w: '1', j: 'false', rc: 'local', readPref: 'secondary' },
     },

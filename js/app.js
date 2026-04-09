@@ -216,18 +216,9 @@ function handleElection() {
   resetWriteVisual();
   resetReadVisual();
   draw();
-  log('\u2500\u2500\u2500 Election triggered \u2500\u2500\u2500', 'warn');
-  runMachine(arrayMachine(buildElectionSteps()), electionEngine, 'write-step-panel');
-}
-
-function handleForceElection() {
-  if (electionEngine.busy || (electionEngine.idx !== -1 && !electionEngine.done && !electionEngine.aborted)) return;
-  resetElectionVisual();
-  resetWriteVisual();
-  resetReadVisual();
-  draw();
-  log('\u2500\u2500\u2500 Force Election (partition detected) \u2500\u2500\u2500', 'warn');
-  runMachine(arrayMachine(buildElectionSteps({ forcePartition: true })), electionEngine, 'write-step-panel');
+  const partitioned = isPrimaryPartitioned();
+  log(`\u2500\u2500\u2500 Election triggered${partitioned ? ' (partition)' : ''} \u2500\u2500\u2500`, 'warn');
+  runMachine(arrayMachine(buildElectionSteps(partitioned ? { forcePartition: true } : undefined)), electionEngine, 'write-step-panel');
 }
 
 // Called when any link is restored. Since the simulator uses instant step-down
@@ -504,7 +495,6 @@ document.getElementById('btn-read-session-end').addEventListener('click', handle
 document.getElementById('btn-read-next').addEventListener('click', advanceReadStep);
 document.getElementById('btn-read-finish').addEventListener('click', autoFinishRead);
 document.getElementById('btn-canvas-election').addEventListener('click', handleElection);
-document.getElementById('btn-canvas-force-election')?.addEventListener('click', handleForceElection);
 document.getElementById('btn-canvas-reset-ui')?.addEventListener('click', () => {
   resetClientDrag();
   state.writeClient.targetNode = null;
@@ -513,17 +503,29 @@ document.getElementById('btn-canvas-reset-ui')?.addEventListener('click', () => 
   draw();
 });
 document.getElementById('btn-clear-log').addEventListener('click', () => { document.getElementById('event-log').innerHTML = ''; });
+document.getElementById('btn-dismiss-welcome').addEventListener('click', dismissWelcomePopup);
 document.getElementById('btn-dismiss-mobile').addEventListener('click', dismissMobilePopup);
 document.getElementById('btn-theme-toggle').addEventListener('click', toggleTheme);
 
 // ═══════════════════════════════════════
 // POPUPS
 // ═══════════════════════════════════════
+function dismissWelcomePopup() {
+  document.getElementById('welcome-overlay').classList.remove('visible');
+  try { localStorage.setItem('tcp-welcome-dismissed', '1'); } catch (_) {}
+}
+
 function dismissMobilePopup() {
   document.getElementById('mobile-overlay').classList.remove('visible');
 }
 
 function initPopups() {
+  let welcomed = false;
+  try { welcomed = localStorage.getItem('tcp-welcome-dismissed') === '1'; } catch (_) {}
+  if (!welcomed) {
+    document.getElementById('welcome-overlay').classList.add('visible');
+  }
+
   const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
   if (isMobile) {
     document.getElementById('mobile-overlay').classList.add('visible');
@@ -612,7 +614,7 @@ function createDomBadges() {
     'btn-read-start', 'btn-read-next', 'btn-read-finish',
     'btn-read-session-start', 'btn-read-session-again', 'btn-read-session-end',
     'btn-reset', 'btn-theme-toggle', 'btn-clear-log',
-    'btn-canvas-election', 'btn-canvas-force-election', 'btn-canvas-reset-ui',
+    'btn-canvas-election', 'btn-canvas-reset-ui',
     'write-step-panel', 'read-step-panel',
     'write-status', 'read-status',
     'scenarios-details', 'event-log', 'canvas',

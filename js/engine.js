@@ -113,35 +113,39 @@ function syncButtons() {
   if (selRC) selRC.disabled = readActive || sessionTopoLock;
   if (selRP) selRP.disabled = readActive || sessionTopoLock;
 
-  // ── Canvas election button — contextual overlay near dead primary ──
+  const electionInfoText = '⚡ Election in progress\nuse Write panel controls to step through';
+
+  // ── Canvas election button — shown when primary is dead OR partitioned ──
   const canvasBtnEl = document.getElementById('btn-canvas-election');
   if (canvasBtnEl) {
     const pk = state.primaryKey;
     const pNode = state.nodes[pk];
-    const primaryDown   = !state.nodes[pk].alive;
-    const aliveCount    = Object.values(state.nodes).filter(n => n.alive).length;
+    const primaryDown    = !state.nodes[pk].alive;
+    const partitioned    = isPrimaryPartitioned();
+    const aliveCount     = Object.values(state.nodes).filter(n => n.alive).length;
     const majorityNeeded = Math.floor(Object.keys(state.nodes).length / 2) + 1;
-    const canElect      = aliveCount >= majorityNeeded;
-    const hasCandidates = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
-    const show = primaryDown && hasCandidates && canElect && !electionActive && !writeActive && !sessionTopoLock;
+    const canElect       = aliveCount >= majorityNeeded;
+    const hasCandidates  = Object.keys(state.nodes).some(k => k !== pk && state.nodes[k].alive);
+    const showForDead      = primaryDown && hasCandidates && canElect;
+    const showForPartition = partitioned;
+    const show = (showForDead || showForPartition) && !writeActive && !sessionTopoLock;
     canvasBtnEl.style.display = show ? 'block' : 'none';
     if (show) {
-      canvasBtnEl.style.left = (14 + pNode.x) + 'px';
-      canvasBtnEl.style.top  = (14 + pNode.y + 52 + 18) + 'px'; // NR=52, 18px gap
-    }
-  }
-
-  // ── Force election button — shown when primary is partitioned but alive ──
-  const forceBtnEl = document.getElementById('btn-canvas-force-election');
-  if (forceBtnEl) {
-    const partitioned = isPrimaryPartitioned();
-    const showForce = partitioned && !electionActive && !writeActive && !sessionTopoLock;
-    forceBtnEl.style.display = showForce ? 'block' : 'none';
-    if (showForce) {
-      const s1 = state.nodes.s1, s2 = state.nodes.s2;
-      forceBtnEl.style.left = ((s1.x + s2.x) / 2) + 'px';
-      forceBtnEl.style.top  = ((s1.y + s2.y) / 2 + 20) + 'px';
-      forceBtnEl.style.transform = 'translateX(-50%)';
+      const allNodes = Object.values(state.nodes);
+      const cx = allNodes.reduce((s, n) => s + n.x, 0) / allNodes.length;
+      const cy = allNodes.reduce((s, n) => s + n.y, 0) / allNodes.length;
+      canvasBtnEl.style.left = cx + 'px';
+      canvasBtnEl.style.top  = (cy + 10) + 'px';
+      canvasBtnEl.style.transform = 'translateX(-50%)';
+      if (electionActive) {
+        canvasBtnEl.disabled = true;
+        canvasBtnEl.classList.add('canvas-election-info');
+        canvasBtnEl.innerHTML = electionInfoText.replace('\n', '<br>');
+      } else {
+        canvasBtnEl.disabled = false;
+        canvasBtnEl.classList.remove('canvas-election-info');
+        canvasBtnEl.innerHTML = '⚡ Trigger Election<span class="raft-hint">ⓘ Raft consensus - hover for details</span>';
+      }
     }
   }
 
