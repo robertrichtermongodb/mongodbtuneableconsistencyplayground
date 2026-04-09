@@ -62,6 +62,7 @@ function hideTip() {
 }
 
 document.addEventListener('mouseenter', e => {
+  if (!e.target || !e.target.closest) return;
   const el = e.target.closest('[data-tip]');
   if (!el) return;
   if (tipTarget === el) return;
@@ -71,6 +72,7 @@ document.addEventListener('mouseenter', e => {
 }, true);
 
 document.addEventListener('mouseleave', e => {
+  if (!e.target || !e.target.closest) return;
   const el = e.target.closest('[data-tip]');
   if (el && el === tipTarget) hideTip();
 }, true);
