@@ -269,7 +269,7 @@ function syncRejoiningNode(nodeKey) {
 }
 
 // Resolves which node should serve a read given rc and readPreference.
-// Lives here (not simulation.js) because both draw.js and simulation.js need it.
+// Lives here because both draw.js and read-steps.js need it.
 function resolveReadTarget(rc, readPref) {
   // Manual override — user pinned the reader to a specific node
   if (state.readClient.targetNode) return state.readClient.targetNode;

@@ -192,6 +192,21 @@ describe('rc:linearizable', () => {
       'should detect dead secondaries at runtime, not just build time');
   });
 
+  it('rejects when manually targeted to a secondary', async () => {
+    await writeV1();
+    s().readClient.targetNode = 's1';
+    s().readClient.phase = 'idle';
+    idleAllPhases(ctx);
+
+    const steps = readSteps('linearizable', 'primary');
+    const titles = await runSteps(steps);
+
+    assert.equal(s().readClient.phase, 'error');
+    assert.equal(s().readClient.errorReason, 'linearizableNotPrimary');
+    assert.ok(titles.some(t => /not.*primary/i.test(t)),
+      `should mention not-primary: ${titles.join(' | ')}`);
+  });
+
   it('returns fresh majorityCommitId at data-return time (not build time)', async () => {
     await writeV1();
     assert.equal(s().doc.majorityCommitId, 1);

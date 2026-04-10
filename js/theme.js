@@ -124,7 +124,7 @@ const THEMES = {
     hoverKillHint:'#FF6B6B44',
     hoverRevHint: '#00ED6444',
 
-    // ── Particle/data flow colors (simulation.js) ──
+    // ── Particle/data flow colors (write-machine.js, read-steps.js) ──
     flowWrite:    '#F5A623',
     flowRepl:     '#4A90D9',
     flowAck:      '#00ED64',

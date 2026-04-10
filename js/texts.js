@@ -401,6 +401,15 @@ const TEXTS = {
         `This is the safety trade-off: linearizable reads choose correctness over availability.`,
     },
 
+    linearizableNotPrimary(targetLabel) {
+      return {
+        title: `Linearizable read rejected \u2014 not the primary`,
+        explain: `<strong>rc:linearizable requires the primary.</strong> The read client is targeting <em>${targetLabel}</em>, ` +
+          `which is a secondary. Linearizable reads need the primary to confirm leadership with a majority before answering \u2014 ` +
+          `a secondary cannot perform this check. The driver enforces primary routing for linearizable regardless of readPreference.`,
+      };
+    },
+
     snapshotRead(snapLabel, isSession, targetKey, primaryKey) {
       const sessionNote = isSession
         ? `The <strong>snapshot session</strong> is locked at <strong>${snapLabel}</strong>. Even if new writes are confirmed while this read runs, the session always returns the same point-in-time view.`
@@ -531,6 +540,12 @@ const TEXTS = {
       return `<div class="cb-label">Read blocked</div>` +
         `<div class="cb-status cb-error">\u26A0 Leadership not confirmed</div>` +
         `<div class="cb-detail">rc:linearizable requires the primary to prove leadership with a majority. Under partition it can\u2019t - the read blocks until maxTimeMS expires.${sessionSuffix}</div>`;
+    },
+
+    readLinearizableNotPrimary(sessionSuffix) {
+      return `<div class="cb-label">Read rejected</div>` +
+        `<div class="cb-status cb-error">\u26A0 Not the primary</div>` +
+        `<div class="cb-detail">rc:linearizable requires the primary \u2014 a secondary cannot confirm leadership. The driver enforces primary routing automatically.${sessionSuffix}</div>`;
     },
 
     readNone(rcVal, reason, sessionSuffix) {

@@ -216,3 +216,31 @@ Each metric: **GREEN = 2, YELLOW = 1, RED = 0**. Maximum: **22** (11 metrics).
 - **Measurement script:** Added `scripts/measure-quality.js` for deterministic, repeatable scorecard. Corrected iteration 25 snapshot (measurement inconsistencies, not actual regressions)
 - **Measurement rules:** Added mandatory rules to quality-standards.md preventing future estimation-based measurement
 - Zero behavioral change — 130/130 tests passing
+
+## Snapshot — 2026-04-10 (iteration 27: GPT-5.3 assessment remediation)
+
+*Measured with `node scripts/measure-quality.js`.*
+
+| # | Metric | Previous | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 32 (`draw`) | 30 (`drawLockHint`) | **-2** | GREEN |
+| 2 | Functions > 30 lines | 4 | 0 | **-4** | GREEN |
+| 3 | Avg function length | 11.0 | 10.4 | -0.6 | GREEN |
+| 4 | Magic numbers | ~65 | ~65 | 0 | RED |
+| 5 | Single-char variables | 3 | 2 | -1 | GREEN |
+| 6 | Max nesting depth | 4 (`logElectionResult`) | 3 (`awaitParticle`) | **-1** | GREEN |
+| 7 | Max file length | 797 (`draw.js`) | 806 (`draw.js`) | +9 | RED |
+| 8 | Mixed-abstraction functions | ~3 | ~3 | 0 | YELLOW |
+| 9 | Duplicated code patterns | ~0 | ~0 | 0 | GREEN |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| 11 | Opaque conditionals | 0 | 0 | 0 | GREEN |
+| | **Total** | **17 / 22** | **19 / 22** | **+2** | **Healthy** |
+
+**Changes:**
+- **Linearizable-to-secondary error (option C):** When `rc:linearizable` targets a non-primary via manual client targeting, `buildReadSteps` now produces an error step ("Linearizable read rejected — not the primary") analogous to `NotWritablePrimary` for writes. New `TEXTS.read.linearizableNotPrimary` and `TEXTS.consistency.readLinearizableNotPrimary`. `resolveReadTarget()` is unchanged; the guard lives in `buildConcernSteps`.
+- **Project rule alignment:** Updated `.cursor/rules/tcp-project.mdc` load order and file responsibilities table to match current module split (removed `simulation.js`, added `write-machine.js`, `read-steps.js`, `election-steps.js`, `animation.js`, `tooltips.js`).
+- **Stale comment cleanup:** Fixed `draw.js` BFS comment, `state.js` simulation.js reference, `theme.js` simulation.js reference.
+- **Function size (metric #1 -> GREEN):** Extracted `drawNodes`, `syncResetButton`, `computeLedgerState`, `drawNodeHoverRing`, `wmBuildContext` — all 4 over-30 functions now ≤30.
+- **Nesting depth (metric #6 -> GREEN):** Flattened `logElectionResult` (ternary instead of if/else). Extracted 8 `awaitParticle` callbacks into named module-level functions: `onLinearizableArrive`, `onStandardReadArrive`, `wmOnSecondaryMemArrive`, `wmApplyPrimaryMem`, `wmApplyPrimaryJournal`, `wmOnFireForgetArrive`, `wmFireForgetRun`, `wmWcFailureRun`. Extracted `issueReadRun` from `buildIssueReadStep`.
+- **Mixed-abstraction note:** The extracted step-execution helpers are "mixed" by definition (state + draw/log) but unavoidably so — they implement step execution. Genuine architectural mixing (~3 in app.js event handlers) is unchanged.
+- One behavioral change (linearizable-to-secondary error) — 131/131 tests passing

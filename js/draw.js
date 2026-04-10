@@ -181,10 +181,22 @@ function hitTest(mx, my) {
 // ═══════════════════════════════════════
 // DRAW
 // ═══════════════════════════════════════
+function drawNodes() {
+  Object.entries(state.nodes).forEach(([k, n]) => {
+    const role = k === state.primaryKey ? 'primary' : isNodeIsolated(k) ? 'isolated' : 'secondary';
+    drawNode(n, role);
+  });
+}
+
+function syncResetButton() {
+  const resetBtn = document.getElementById('btn-canvas-reset-ui');
+  const hasCustomUI = clientDragged.write || clientDragged.read || state.writeClient.targetNode || state.readClient.targetNode;
+  if (resetBtn) resetBtn.style.display = hasCustomUI ? 'block' : 'none';
+}
+
 function draw() {
-  const W = canvasW, H = canvasH;
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = THEME.canvasBg; ctx.fillRect(0, 0, W, H);
+  ctx.clearRect(0, 0, canvasW, canvasH);
+  ctx.fillStyle = THEME.canvasBg; ctx.fillRect(0, 0, canvasW, canvasH);
 
   const selW  = getSelectedWriteConcern();
   const selRC = getSelectedReadConcern();
@@ -194,22 +206,13 @@ function draw() {
   drawReplicationLinks();
   drawWriteClientLine();
   drawReadClientLine(selRC, selRP);
-  // Role is computed dynamically — never stored. isNodeIsolated() does BFS
-  // to check if the node can reach the primary through live links.
-  Object.entries(state.nodes).forEach(([k, n]) => {
-    const role = k === state.primaryKey ? 'primary' : isNodeIsolated(k) ? 'isolated' : 'secondary';
-    drawNode(n, role);
-  });
+  drawNodes();
   drawWriteClient(selW);
   drawReadClient(selRC);
   drawDocLedger();
   drawParticles();
   updateConsistencyViews();
-
-  const resetBtn = document.getElementById('btn-canvas-reset-ui');
-  const hasCustomUI = clientDragged.write || clientDragged.read || state.writeClient.targetNode || state.readClient.targetNode;
-  if (resetBtn) resetBtn.style.display = hasCustomUI ? 'block' : 'none';
-
+  syncResetButton();
   drawLockHint();
   if (typeof debugLabelsActive !== 'undefined' && debugLabelsActive) drawDebugLabels();
 }
@@ -320,36 +323,39 @@ function drawLedgerVersionRows(cx, by, latestId, majorityCommitId, isLost, hasCo
   }
 }
 
-function drawDocLedger() {
+function computeLedgerState() {
   const { latestId, majorityCommitId } = state.doc;
-  const cx      = canvasW / 2;
-  const ledgerY = 40;
-
-  ctx.save();
-  ctx.textAlign = 'center';
-
-  if (latestId === 0) {
-    drawIconText('Doc #1  ·  no writes yet', cx, ledgerY + 4, '10px system-ui', THEME.textDimmer, 10);
-    ctx.restore(); return;
-  }
-
   const hasCommitted = majorityCommitId > 0;
   const hasInFlight  = latestId > majorityCommitId;
   const latestVer    = state.doc.versions.find(v => v.id === latestId);
   const latestAcks   = latestVer ? latestVer.ackedBy.size : 0;
   const isLost       = hasInFlight && latestAcks === 0 && state.writeClient.phase === 'received';
-  const twoRows = hasCommitted && hasInFlight;
+  return { latestId, majorityCommitId, hasCommitted, hasInFlight, isLost };
+}
+
+function drawDocLedger() {
+  const cx = canvasW / 2, ledgerY = 40;
+  ctx.save();
+  ctx.textAlign = 'center';
+
+  const ls = computeLedgerState();
+  if (ls.latestId === 0) {
+    drawIconText('Doc #1  ·  no writes yet', cx, ledgerY + 4, '10px system-ui', THEME.textDimmer, 10);
+    ctx.restore(); return;
+  }
+
+  const twoRows = ls.hasCommitted && ls.hasInFlight;
   const boxW = 190, boxH = twoRows ? 58 : 42;
   const bx = cx - boxW / 2, by = ledgerY - boxH / 2;
 
   ctx.fillStyle = THEME.badgeBg;
   ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 6); ctx.fill();
-  ctx.strokeStyle = isLost ? THEME.red : hasInFlight ? THEME.amber : THEME.green;
+  ctx.strokeStyle = ls.isLost ? THEME.red : ls.hasInFlight ? THEME.amber : THEME.green;
   ctx.lineWidth = 1.4;
   ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 6); ctx.stroke();
 
   drawIconText('Doc #1', cx, by + 13, 'bold 9px system-ui', THEME.ledgerTitle, 9);
-  drawLedgerVersionRows(cx, by, latestId, majorityCommitId, isLost, hasCommitted, hasInFlight);
+  drawLedgerVersionRows(cx, by, ls.latestId, ls.majorityCommitId, ls.isLost, ls.hasCommitted, ls.hasInFlight);
   ctx.restore();
 }
 
@@ -490,17 +496,19 @@ function drawAlivePip(node) {
   ctx.restore();
 }
 
+function drawNodeHoverRing(node) {
+  ctx.beginPath(); ctx.arc(node.x, node.y, NODE_RADIUS + HOVER_RING_OFFSET, 0, Math.PI * 2);
+  ctx.strokeStyle = node.alive ? THEME.hoverKillHint : THEME.hoverRevHint;
+  ctx.lineWidth = STROKE_HOVER; ctx.stroke();
+}
+
 function drawNode(node, role) {
   const nodeKey = Object.keys(state.nodes).find(k => state.nodes[k] === node);
   const hovered = hoverTarget && hoverTarget.type === 'node' && hoverTarget.key === nodeKey;
   const isIsolated = role === 'isolated';
 
   ctx.save();
-  if (hovered) {
-    ctx.beginPath(); ctx.arc(node.x, node.y, NODE_RADIUS + HOVER_RING_OFFSET, 0, Math.PI * 2);
-    ctx.strokeStyle = node.alive ? THEME.hoverKillHint : THEME.hoverRevHint;
-    ctx.lineWidth = STROKE_HOVER; ctx.stroke();
-  }
+  if (hovered) drawNodeHoverRing(node);
   if (!node.alive) ctx.globalAlpha = NODE_DEAD_ALPHA;
   const defStroke = isIsolated ? THEME.amber : role === 'primary' ? THEME.nodeStrokePri : THEME.nodeStrokeSec;
   const stroke    = phaseStroke(node.phase) || defStroke;
@@ -518,7 +526,6 @@ function drawNode(node, role) {
   ctx.fillText(isIsolated ? `${node.label} (isolated)` : node.label, node.x, node.y + NODE_LABEL_OFFSET_Y);
   drawNodeDocBadge(node);
   ctx.restore();
-
   drawAlivePip(node);
 }
 
@@ -773,6 +780,8 @@ function updateReadStatusView(rBox) {
   if (rc.phase === 'error') {
     rBox.innerHTML = rc.errorReason === 'linearizable'
       ? TEXTS.consistency.readLinearizableBlocked(sessionSuffix)
+      : rc.errorReason === 'linearizableNotPrimary'
+      ? TEXTS.consistency.readLinearizableNotPrimary(sessionSuffix)
       : TEXTS.consistency.readFailed(sessionSuffix);
     return;
   }

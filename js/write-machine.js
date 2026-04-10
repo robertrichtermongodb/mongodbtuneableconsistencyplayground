@@ -83,18 +83,20 @@ function wmRecordAck(ctx, k) {
   advanceMajorityCommit();
 }
 
+function wmOnSecondaryMemArrive(ctx, k, label) {
+  state.nodes[k].memoryVersion = ctx.nextId;
+  if (!ctx.ackNeedsJournal) wmRecordAck(ctx, k);
+  state.nodes[k].phase = 'active';
+  log(`${label}: v${ctx.nextId} in memory.`, 'info');
+}
+
 function wmMakeMemStep(ctx, k) {
   const label = state.nodes[k].label;
   const txt = TEXTS.write.secondaryMem(label, ctx.opLabel, ctx.acked, ctx.ackNeedsJournal, ctx.journalRequired);
   return {
     title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
-      await awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => {
-        state.nodes[k].memoryVersion = ctx.nextId;
-        if (!ctx.ackNeedsJournal) wmRecordAck(ctx, k);
-        state.nodes[k].phase = 'active';
-        log(`${label}: v${ctx.nextId} in memory.`, 'info');
-      });
+      await awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => wmOnSecondaryMemArrive(ctx, k, label));
       draw();
     },
   };
@@ -146,6 +148,11 @@ function wmHandleSendPhase(ctx) {
   if (failed) return failed;
   ctx.phase = 'primaryMem';
   const txt = TEXTS.write.clientSend(ctx.opLabel, ctx.w, ctx.journalRequired);
+  const onWriteArrive = () => {
+    state.nodes[effectiveWriteTarget()].phase = 'active';
+    state.writeClient.phase = 'waiting';
+    log(`Write received by primary (${ctx.opLabel}).`, 'info');
+  };
   return wmEmit(ctx, {
     title: txt.title, explain: txt.explain,
     run: () => {
@@ -153,13 +160,23 @@ function wmHandleSendPhase(ctx) {
       state.doc.versions.push(entry);
       state.doc.latestId = ctx.nextId;
       state.writeClient.lastWrittenVersion = ctx.nextId;
-      return awaitParticle(state.writeClient, state.nodes[effectiveWriteTarget()], THEME.flowWrite, ctx.op === 'insert' ? 'INS' : 'UPD', () => {
-        state.nodes[effectiveWriteTarget()].phase = 'active';
-        state.writeClient.phase = 'waiting';
-        log(`Write received by primary (${ctx.opLabel}).`, 'info');
-      });
+      const particleLabel = ctx.op === 'insert' ? 'INS' : 'UPD';
+      return awaitParticle(state.writeClient, state.nodes[effectiveWriteTarget()], THEME.flowWrite, particleLabel, onWriteArrive);
     },
   });
+}
+
+function wmApplyPrimaryMem(ctx) {
+  const wt = effectiveWriteTarget();
+  state.nodes[wt].memoryVersion = ctx.nextId;
+  if (!ctx.ackNeedsJournal) {
+    const entry = state.doc.versions.find(v => v.id === ctx.nextId);
+    if (entry) entry.ackedBy.add(wt);
+    advanceMajorityCommit();
+  }
+  state.nodes[wt].phase = 'active';
+  log(`Primary: v${ctx.nextId} applied in memory.`, 'info');
+  draw();
 }
 
 function wmHandlePrimaryMemPhase(ctx) {
@@ -167,19 +184,21 @@ function wmHandlePrimaryMemPhase(ctx) {
   const txt = TEXTS.write.primaryMem(ctx.opLabel, ctx.ackNeedsJournal, ctx.journalRequired);
   return wmEmit(ctx, {
     title: txt.title, serverSide: true, explain: txt.explain,
-    run: async () => {
-      const wt = effectiveWriteTarget();
-      state.nodes[wt].memoryVersion = ctx.nextId;
-      if (!ctx.ackNeedsJournal) {
-        const entry = state.doc.versions.find(v => v.id === ctx.nextId);
-        if (entry) { entry.ackedBy.add(wt); }
-        advanceMajorityCommit();
-      }
-      state.nodes[wt].phase = 'active';
-      log(`Primary: v${ctx.nextId} applied in memory.`, 'info');
-      draw();
-    },
+    run: () => wmApplyPrimaryMem(ctx),
   });
+}
+
+function wmApplyPrimaryJournal(ctx) {
+  const wt = effectiveWriteTarget();
+  journalFlush(wt);
+  if (ctx.ackNeedsJournal) {
+    const entry = state.doc.versions.find(v => v.id === ctx.nextId);
+    if (entry) entry.ackedBy.add(wt);
+    advanceMajorityCommit();
+  }
+  state.nodes[wt].phase = ctx.w === 0 ? 'acked' : 'active';
+  log(`Primary: journal flushed - v${ctx.nextId} crash-safe.`, 'ok');
+  draw();
 }
 
 function wmHandlePrimaryJournalPhase(ctx) {
@@ -187,19 +206,26 @@ function wmHandlePrimaryJournalPhase(ctx) {
   const txt = TEXTS.write.primaryJournal(ctx.opLabel, ctx.ackNeedsJournal, ctx.journalRequired);
   return wmEmit(ctx, {
     title: txt.title, serverSide: true, explain: txt.explain,
-    run: async () => {
-      const wt = effectiveWriteTarget();
-      journalFlush(wt);
-      if (ctx.ackNeedsJournal) {
-        const entry = state.doc.versions.find(v => v.id === ctx.nextId);
-        if (entry) { entry.ackedBy.add(wt); }
-        advanceMajorityCommit();
-      }
-      state.nodes[wt].phase = ctx.w === 0 ? 'acked' : 'active';
-      log(`Primary: journal flushed - v${ctx.nextId} crash-safe.`, 'ok');
-      draw();
-    },
+    run: () => wmApplyPrimaryJournal(ctx),
   });
+}
+
+function wmOnFireForgetArrive(ctx, k) {
+  state.nodes[k].memoryVersion = ctx.nextId;
+  const entry = state.doc.versions.find(v => v.id === ctx.nextId);
+  if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
+  state.nodes[k].phase = 'acked';
+  setTimeout(() => { journalFlush(k); draw(); }, PAUSE_JOURNAL_MS);
+}
+
+function wmFireForgetRun(ctx, secs) {
+  secs.forEach((k, i) => setTimeout(() =>
+    awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => wmOnFireForgetArrive(ctx, k)),
+  i * PAUSE_STAGGER_MS));
+  startAnimLoop();
+  log(`w:0 - no ACK. ${ctx.opLabel} async replication proceeds.`, 'warn');
+  state.writeClient.phase = 'idle';
+  draw();
 }
 
 function wmHandleFireForgetPhase(ctx) {
@@ -208,21 +234,7 @@ function wmHandleFireForgetPhase(ctx) {
   const txt = TEXTS.write.fireForget(ctx.opLabel, ctx.topoNote);
   return wmEmit(ctx, {
     title: txt.title, explain: txt.explain,
-    run: async () => {
-      secs.forEach((k, i) => setTimeout(() =>
-        awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => {
-          state.nodes[k].memoryVersion = ctx.nextId;
-          const entry = state.doc.versions.find(v => v.id === ctx.nextId);
-          if (entry) { entry.ackedBy.add(k); advanceMajorityCommit(); }
-          state.nodes[k].phase = 'acked';
-          setTimeout(() => { journalFlush(k); draw(); }, PAUSE_JOURNAL_MS);
-        }),
-      i * PAUSE_STAGGER_MS));
-      startAnimLoop();
-      log(`w:0 - no ACK. ${ctx.opLabel} async replication proceeds.`, 'warn');
-      state.writeClient.phase = 'idle';
-      draw();
-    },
+    run: () => wmFireForgetRun(ctx, secs),
   });
 }
 
@@ -269,6 +281,16 @@ function wmTryNextSecondaryMem(ctx) {
   return wmEmit(ctx, wmMakeMemStep(ctx, nextSec));
 }
 
+async function wmWcFailureRun(ctx) {
+  await delay(PAUSE_LONG_MS);
+  const wt = effectiveWriteTarget();
+  if (state.nodes[wt].alive) state.nodes[wt].phase = 'error';
+  state.writeClient.phase = 'error';
+  if (state.nodes[wt].alive)
+    await awaitParticle(state.nodes[wt], state.writeClient, THEME.flowErr, 'ERR', () => {});
+  log(`Write concern error - w:${ctx.w} unachievable. ${ctx.opLabel} sits on primary.`, 'err');
+}
+
 function wmTryWcFailure(ctx) {
   if (ctx.acked || wmIsWcSatisfied(ctx)) return null;
   const reachCount = Object.keys(state.nodes).filter(k => isReachableForWrite(k)).length;
@@ -276,16 +298,7 @@ function wmTryWcFailure(ctx) {
   const txt = TEXTS.write.wcUnsatisfied(ctx.opLabel, ctx.w, ctx.needCount, reachCount);
   return wmEmit(ctx, {
     title: txt.title, explain: txt.explain,
-    run: async () => {
-      await delay(PAUSE_LONG_MS);
-      const wt = effectiveWriteTarget();
-      if (state.nodes[wt].alive) state.nodes[wt].phase = 'error';
-      state.writeClient.phase = 'error';
-      if (state.nodes[wt].alive) {
-        await awaitParticle(state.nodes[wt], state.writeClient, THEME.flowErr, 'ERR', () => {});
-      }
-      log(`Write concern error - w:${ctx.w} unachievable. ${ctx.opLabel} sits on primary.`, 'err');
-    },
+    run: () => wmWcFailureRun(ctx),
   });
 }
 
@@ -322,21 +335,24 @@ const wmPhaseHandlers = {
 
 // ── Factory ──
 
-function createWriteMachine(wOrig, journalRequired) {
-  const wc   = normalizeWriteConcern(wOrig, journalRequired);
-  const op   = buildWriteOp(state.doc, wc.w);
-  const topo = buildTopoSnapshot();
-
-  const ctx = {
+function wmBuildContext(wc, op, topo, journalRequired) {
+  const secKeys = Object.keys(state.nodes).filter(k => k !== effectiveWriteTarget());
+  return {
     w: wc.w, ackNeedsJournal: wc.ackNeedsJournal, needCount: wc.needCount, secsNeeded: wc.secsNeeded,
     nextId: op.nextId, op: op.op, opLabel: op.opLabel, isDefault: op.isDefault, defaultNote: op.defaultNote,
     topoNote: topo.allHealthy ? '' : TEXTS.topoNote(topo),
     journalRequired,
     phase: 'send', replicated: new Set(), memApplied: new Set(),
     pendingJournal: null, acked: false, history: [],
-    secKeys: Object.keys(state.nodes).filter(k => k !== effectiveWriteTarget()),
-    totalSecs: Object.keys(state.nodes).filter(k => k !== effectiveWriteTarget()).length,
+    secKeys, totalSecs: secKeys.length,
   };
+}
+
+function createWriteMachine(wOrig, journalRequired) {
+  const wc   = normalizeWriteConcern(wOrig, journalRequired);
+  const op   = buildWriteOp(state.doc, wc.w);
+  const topo = buildTopoSnapshot();
+  const ctx  = wmBuildContext(wc, op, topo, journalRequired);
 
   return {
     history: ctx.history,

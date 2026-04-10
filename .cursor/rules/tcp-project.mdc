@@ -10,23 +10,27 @@ alwaysApply: true
 Single-page vanilla JS app (no build step). Open `index.html` and it works.
 
 ### File load order (must stay in this sequence)
-`theme.js → state.js → logger.js → icons.js → texts.js → draw.js → engine.js → simulation.js → app.js`
+`theme.js → state.js → logger.js → icons.js → texts.js → animation.js → draw.js → engine.js → write-machine.js → read-steps.js → election-steps.js → tooltips.js → app.js`
 
 ### File responsibilities — one concern per file
 | File | Owns |
 |------|------|
 | `state.js` | State object, doc helpers, partition helpers (`getPartition`, `isNodeIsolated`, `effectiveWriteTarget`, `resolveReadTarget`). Shared logic lives here. |
 | `texts.js` | ALL user-facing strings (step titles, explains, tooltips, badge text). Never hardcode UI text elsewhere. |
-| `simulation.js` | Write state machine (`createWriteMachine`), read steps (`buildReadSteps`), election steps (`buildElectionSteps`). |
+| `write-machine.js` | `createWriteMachine()` — lazy write step generator. |
+| `read-steps.js` | `buildReadSteps()` — pre-built read step arrays. |
+| `election-steps.js` | `buildElectionSteps()` — pre-built election step arrays. |
 | `engine.js` | Step engine runner (`runMachine`), UI button sync (`syncButtons`). |
-| `draw.js` | Canvas rendering, hit testing, layout, animations. |
+| `animation.js` | Particle animation loop, easing, `skipAnimations` control. |
+| `draw.js` | Canvas rendering, hit testing, layout, consistency overlays. |
+| `tooltips.js` | Custom tooltip component (delegated mouseenter/mouseleave). |
 | `app.js` | Event handlers, canvas interaction, popups, init. |
 
 ## Key Invariants
 
 - **Never store derived state.** `isNodeIsolated()` is computed from topology, not a stored flag. The secondary-to-secondary link visual uses `aKey !== state.primaryKey && bKey !== state.primaryKey`, not a link key check.
 - **`effectiveWriteTarget()`** returns `writeClient.targetNode || state.primaryKey`. All write operations use this, never raw `state.primaryKey`.
-- **`resolveReadTarget()`** returns `readClient.targetNode` if set, else applies readPreference logic.
+- **`resolveReadTarget()`** returns `readClient.targetNode` if set, else applies readPreference logic. For `rc:linearizable`, manual targeting to a non-primary produces an error step (like `NotWritablePrimary` for writes).
 - **Link keys are slot-based** (`ps1`, `ps2`, `s1s2`), not role-based. After election, the physical wire stays the same but the roles swap.
 - **Reads don't change node colors.** Only write concern operations mutate node phases.
 - **Primary journal flushes before replication** in all write concern modes (simplification for storytelling clarity).

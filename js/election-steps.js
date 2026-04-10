@@ -56,12 +56,13 @@ function invalidateSnapshotIfNeeded() {
 
 function logElectionResult(uncommitted, oldPk, oldLabel, forcePartition) {
   if (uncommitted.length > 0) {
-    const staleHolder = forcePartition ? state.nodes[oldPk] : null;
-    if (staleHolder && staleHolder.memoryVersion > state.doc.majorityCommitId) {
-      log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} not majority-committed. Old primary retains stale data until it reconnects.`, 'warn');
-    } else {
-      log(`Rollback: ${uncommitted.map(v => `v${v.id}`).join(', ')} not majority-committed \u2014 rolled back.`, 'warn');
-    }
+    const vList = uncommitted.map(v => `v${v.id}`).join(', ');
+    const isStaleRetained = forcePartition
+      && state.nodes[oldPk].memoryVersion > state.doc.majorityCommitId;
+    const suffix = isStaleRetained
+      ? 'Old primary retains stale data until it reconnects.'
+      : '\u2014 rolled back.';
+    log(`Rollback: ${vList} not majority-committed. ${suffix}`, 'warn');
   }
   if (forcePartition) {
     log(`${oldLabel} is now Primary. Old primary stepped down and is isolated.`, 'warn');

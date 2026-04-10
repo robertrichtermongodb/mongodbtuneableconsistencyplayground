@@ -24,10 +24,8 @@ function buildLocalReadSteps(steps, target, targetKey, rc) {
 
 function buildMajorityFrozenSteps(steps, target, frozenExplainCount) {
   const tFroz = TEXTS.read.majorityFrozen(frozenExplainCount);
-  const frozenId = Math.min(
-    state.doc.majorityCommitId,
-    target ? (target.memoryVersion || 0) : 0
-  );
+  const targetMem = target ? (target.memoryVersion || 0) : 0;
+  const frozenId = Math.min(state.doc.majorityCommitId, targetMem);
   const frozenLabel = frozenId > 0 ? `v${frozenId}` : 'none';
   steps.push({
     title: tFroz.title, explain: tFroz.explain,
@@ -37,13 +35,14 @@ function buildMajorityFrozenSteps(steps, target, frozenExplainCount) {
     },
   });
   const tFrozRet = TEXTS.read.majorityFrozenReturn(frozenLabel);
+  const onFrozenArrive = () => {
+    state.readClient.phase = 'received';
+    state.readClient.lastReceivedVersion = { id: frozenId, dirty: false };
+  };
   steps.push({
     title: tFrozRet.title, explain: tFrozRet.explain,
     run: async () => {
-      await awaitParticle(target, state.readClient, THEME.flowWrite, frozenLabel, () => {
-        state.readClient.phase = 'received';
-        state.readClient.lastReceivedVersion = { id: frozenId, dirty: false };
-      });
+      await awaitParticle(target, state.readClient, THEME.flowWrite, frozenLabel, onFrozenArrive);
       log(`Read returned frozen majority snapshot: ${frozenLabel}. Stale but safe from rollback.`, 'warn');
     },
   });
@@ -118,6 +117,13 @@ function buildSnapshotReadSteps(steps, target, targetKey, snapshotOverrideId) {
   });
 }
 
+function onLinearizableArrive(served) {
+  const label = served.id > 0 ? `v${served.id}` : 'none';
+  state.readClient.phase = 'received';
+  state.readClient.lastReceivedVersion = { id: served.id, dirty: false };
+  log(`Read complete (rc:linearizable): ${label}${served.id > 0 ? ' \u2713' : ' (none)'}`, served.id > 0 ? 'ok' : 'info');
+}
+
 function buildLinearizableReturnStep(steps, target, targetKey) {
   const linSuccess = TEXTS.read.linearizableReturn;
   const linBlocked = TEXTS.read.linearizableBlocked;
@@ -129,13 +135,15 @@ function buildLinearizableReturnStep(steps, target, targetKey) {
       const rServed = getServedVersion(targetKey, 'linearizable');
       const rLabel = rServed.id > 0 ? `v${rServed.id}` : 'none';
       const color = rServed.id > 0 ? THEME.flowAck : THEME.flowDim;
-      await awaitParticle(target, state.readClient, color, rLabel, () => {
-        state.readClient.phase = 'received';
-        state.readClient.lastReceivedVersion = { id: rServed.id, dirty: false };
-        log(`Read complete (rc:linearizable): ${rLabel}${rServed.id > 0 ? ' \u2713' : ' (none)'}`, rServed.id > 0 ? 'ok' : 'info');
-      });
+      await awaitParticle(target, state.readClient, color, rLabel, () => onLinearizableArrive(rServed));
     },
   });
+}
+
+function onStandardReadArrive(rc, served, vLabel, isDirty) {
+  state.readClient.phase = 'received';
+  state.readClient.lastReceivedVersion = { id: served.id, dirty: isDirty };
+  log(`Read complete (rc:${rc}): ${vLabel}${isDirty ? ' \u26A0 (dirty)' : served.id > 0 ? ' \u2713' : ' (none)'}`, isDirty ? 'warn' : 'ok');
 }
 
 function buildStandardReturnStep(steps, rc, target, served, vLabel, isDirty, snapshotOverrideId) {
@@ -144,11 +152,7 @@ function buildStandardReturnStep(steps, rc, target, served, vLabel, isDirty, sna
   steps.push({
     title: tRet.title, explain: tRet.explain,
     run: async () => {
-      await awaitParticle(target, state.readClient, color, vLabel, () => {
-        state.readClient.phase = 'received';
-        state.readClient.lastReceivedVersion = { id: served.id, dirty: isDirty };
-        log(`Read complete (rc:${rc}): ${vLabel}${isDirty ? ' \u26A0 (dirty)' : served.id > 0 ? ' \u2713' : ' (none)'}`, isDirty ? 'warn' : 'ok');
-      });
+      await awaitParticle(target, state.readClient, color, vLabel, () => onStandardReadArrive(rc, served, vLabel, isDirty));
     },
   });
 }
@@ -203,21 +207,22 @@ function buildDisconnectedStep(steps) {
   });
 }
 
+function issueReadRun(rc, readPref, target, onReadArrive) {
+  state.readClient.phase = 'waiting';
+  if (!target || !target.alive) {
+    state.readClient.phase = 'error';
+    log(`No ${readPref} node available.`, 'err');
+    draw(); return Promise.resolve();
+  }
+  return awaitParticle(state.readClient, target, THEME.flowRead, 'read?', onReadArrive);
+}
+
 function buildIssueReadStep(steps, rc, readPref, target, vLabel, rcNote) {
   const tIssue = TEXTS.read.issueRead(rc, readPrefLabel(readPref), vLabel, rcNote[rc], rc === 'linearizable' && readPref !== 'primary');
+  const onReadArrive = () => log(`Read arrived at ${target.label} (rc:${rc}, node holds v${target.memoryVersion || 'none'}).`, 'info');
   steps.push({
     title: tIssue.title, explain: tIssue.explain,
-    run: async () => {
-      state.readClient.phase = 'waiting';
-      if (!target || !target.alive) {
-        state.readClient.phase = 'error';
-        log(`No ${readPref} node available.`, 'err');
-        draw(); return;
-      }
-      await awaitParticle(state.readClient, target, THEME.flowRead, 'read?', () => {
-        log(`Read arrived at ${target.label} (rc:${rc}, node holds v${target.memoryVersion || 'none'}).`, 'info');
-      });
-    },
+    run: () => issueReadRun(rc, readPref, target, onReadArrive),
   });
 }
 
@@ -231,6 +236,19 @@ function buildNoTargetStep(steps, readPref) {
 
 // ── Per-concern dispatch ──
 
+function buildLinearizableNotPrimaryStep(steps, targetKey) {
+  const txt = TEXTS.read.linearizableNotPrimary(state.nodes[targetKey].label);
+  steps.push({
+    title: txt.title, explain: txt.explain,
+    run: async () => {
+      state.readClient.phase = 'error';
+      state.readClient.errorReason = 'linearizableNotPrimary';
+      log(`rc:linearizable rejected \u2014 ${state.nodes[targetKey].label} is not the primary.`, 'err');
+      draw();
+    },
+  });
+}
+
 function buildConcernSteps(steps, rc, rctx, snapshotOverrideId) {
   const { targetKey, target, majorityOk, frozenExplainCount, served, vLabel, isDirty } = rctx;
   if (rc === 'local' || rc === 'available') {
@@ -238,6 +256,10 @@ function buildConcernSteps(steps, rc, rctx, snapshotOverrideId) {
   } else if (rc === 'majority') {
     if (buildMajorityReadSteps(steps, target, targetKey, vLabel, majorityOk, frozenExplainCount)) return true;
   } else if (rc === 'linearizable') {
+    if (targetKey !== state.primaryKey) {
+      buildLinearizableNotPrimaryStep(steps, targetKey);
+      return true;
+    }
     buildLinearizableReadSteps(steps, target, targetKey);
   } else if (rc === 'snapshot') {
     buildSnapshotReadSteps(steps, target, targetKey, snapshotOverrideId);

@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-04-10 (Iteration 26: quality refactoring part 5 — function splitting, client line deduplication, deterministic measurement tooling).*
+*Last updated 2026-04-10 (Iteration 27: GPT-5.3 assessment remediation — linearizable-to-secondary error, doc/rule alignment, nesting + function size improvements).*
 
 ---
 
@@ -137,7 +137,7 @@ Crash behavior:
 | `crashNode(nodeKey)` | state.js | Wipes `memoryVersion` to 0, retracts acks above `journalVersion`, recomputes majority |
 | `recoverNode(nodeKey)` | state.js | Sets `memoryVersion = journalVersion` — models journal recovery on restart |
 | `syncRejoiningNode(nodeKey)` | state.js | Oplog catch-up / rollback on rejoin. Syncs secondary to the primary's current `memoryVersion` (catches UP if behind, caps DOWN if stale post-election). Adds acks and advances `majorityCommitId`. Returns `true` if synced. |
-| `resolveReadTarget(rc, readPref)` | state.js | Returns `readClient.targetNode` if set, else picks via rc/readPref logic |
+| `resolveReadTarget(rc, readPref)` | state.js | Returns `readClient.targetNode` if set, else picks via rc/readPref logic. For `rc:linearizable` targeting a non-primary, `buildReadSteps` produces an error step. |
 
 ---
 
