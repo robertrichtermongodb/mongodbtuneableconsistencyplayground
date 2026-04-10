@@ -77,6 +77,12 @@ function wmEligibleSecs(ctx) {
 
 function wmPickNextSec(ctx) { return wmEligibleSecs(ctx)[0] || null; }
 
+function wmRecordAck(ctx, k) {
+  const entry = state.doc.versions.find(v => v.id === ctx.nextId);
+  if (entry) entry.ackedBy.add(k);
+  advanceMajorityCommit();
+}
+
 function wmMakeMemStep(ctx, k) {
   const label = state.nodes[k].label;
   const txt = TEXTS.write.secondaryMem(label, ctx.opLabel, ctx.acked, ctx.ackNeedsJournal, ctx.journalRequired);
@@ -85,11 +91,7 @@ function wmMakeMemStep(ctx, k) {
     run: async () => {
       await awaitParticle(state.nodes[effectiveWriteTarget()], state.nodes[k], THEME.flowRepl, 'v' + ctx.nextId, () => {
         state.nodes[k].memoryVersion = ctx.nextId;
-        if (!ctx.ackNeedsJournal) {
-          const entry = state.doc.versions.find(v => v.id === ctx.nextId);
-          if (entry) { entry.ackedBy.add(k); }
-          advanceMajorityCommit();
-        }
+        if (!ctx.ackNeedsJournal) wmRecordAck(ctx, k);
         state.nodes[k].phase = 'active';
         log(`${label}: v${ctx.nextId} in memory.`, 'info');
       });
@@ -105,11 +107,7 @@ function wmMakeJournalStep(ctx, k) {
     title: txt.title, serverSide: true, explain: txt.explain,
     run: async () => {
       journalFlush(k);
-      if (ctx.ackNeedsJournal) {
-        const entry = state.doc.versions.find(v => v.id === ctx.nextId);
-        if (entry) { entry.ackedBy.add(k); }
-        advanceMajorityCommit();
-      }
+      if (ctx.ackNeedsJournal) wmRecordAck(ctx, k);
       state.nodes[k].phase = 'acked';
       log(`${label}: journal flushed - v${ctx.nextId} crash-safe.`, 'ok');
       draw();
@@ -119,7 +117,7 @@ function wmMakeJournalStep(ctx, k) {
 
 // ── Phase handlers ──
 
-function wmHandleSendPhase(ctx) {
+function wmValidateSendTarget(ctx) {
   if (!state.links.wp) {
     const txt = TEXTS.write.writerDisconnected;
     return wmFailWrite(ctx, txt.title, txt.explain);
@@ -140,6 +138,12 @@ function wmHandleSendPhase(ctx) {
       `No write can be delivered.`
     );
   }
+  return null;
+}
+
+function wmHandleSendPhase(ctx) {
+  const failed = wmValidateSendTarget(ctx);
+  if (failed) return failed;
   ctx.phase = 'primaryMem';
   const txt = TEXTS.write.clientSend(ctx.opLabel, ctx.w, ctx.journalRequired);
   return wmEmit(ctx, {

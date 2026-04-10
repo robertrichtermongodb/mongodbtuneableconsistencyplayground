@@ -270,10 +270,9 @@ function drawDebugNodeLabels() {
 
 function drawDebugLinkLabels() {
   const wc = state.writeClient, rc = state.readClient;
-  const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
   Object.keys(state.links).forEach(k => {
     if (k === 'wp' || k === 'rp') return;
-    const pair = pairMap[k];
+    const pair = LINK_PAIR_LABELS[k];
     if (!pair) return;
     const nodeA = state.nodes[pair[0]], nodeB = state.nodes[pair[1]];
     if (!nodeA || !nodeB) return;
@@ -305,6 +304,22 @@ function drawDebugLabels() {
   ctx.restore();
 }
 
+function drawLedgerVersionRows(cx, by, latestId, majorityCommitId, isLost, hasCommitted, hasInFlight) {
+  if (isLost && !hasCommitted) {
+    drawVersionRow(cx, by + 33, `v${latestId}`,         false, 'LOST',      THEME.red,   'bold 13px system-ui');
+  } else if (isLost && hasCommitted) {
+    drawVersionRow(cx, by + 30, `v${majorityCommitId}`, true,  'committed', THEME.green, 'bold 11px system-ui');
+    drawVersionRow(cx, by + 47, `v${latestId}`,         false, 'LOST',      THEME.red,   'bold 11px system-ui');
+  } else if (!hasInFlight) {
+    drawVersionRow(cx, by + 33, `v${latestId}`,         true,  'durable',   THEME.green, 'bold 13px system-ui');
+  } else if (!hasCommitted) {
+    drawVersionRow(cx, by + 33, `v${latestId}`,         false, 'in-flight', THEME.amber, 'bold 13px system-ui');
+  } else {
+    drawVersionRow(cx, by + 30, `v${majorityCommitId}`, true,  'committed', THEME.green, 'bold 11px system-ui');
+    drawVersionRow(cx, by + 47, `v${latestId}`,         false, 'in-flight', THEME.amber, 'bold 11px system-ui');
+  }
+}
+
 function drawDocLedger() {
   const { latestId, majorityCommitId } = state.doc;
   const cx      = canvasW / 2;
@@ -334,21 +349,7 @@ function drawDocLedger() {
   ctx.beginPath(); ctx.roundRect(bx, by, boxW, boxH, 6); ctx.stroke();
 
   drawIconText('Doc #1', cx, by + 13, 'bold 9px system-ui', THEME.ledgerTitle, 9);
-
-  if (isLost && !hasCommitted) {
-    drawVersionRow(cx, by + 33, `v${latestId}`,         false, 'LOST',      THEME.red,   'bold 13px system-ui');
-  } else if (isLost && hasCommitted) {
-    drawVersionRow(cx, by + 30, `v${majorityCommitId}`, true,  'committed', THEME.green, 'bold 11px system-ui');
-    drawVersionRow(cx, by + 47, `v${latestId}`,         false, 'LOST',      THEME.red,   'bold 11px system-ui');
-  } else if (!hasInFlight) {
-    drawVersionRow(cx, by + 33, `v${latestId}`,         true,  'durable',   THEME.green, 'bold 13px system-ui');
-  } else if (!hasCommitted) {
-    drawVersionRow(cx, by + 33, `v${latestId}`,         false, 'in-flight', THEME.amber, 'bold 13px system-ui');
-  } else {
-    drawVersionRow(cx, by + 30, `v${majorityCommitId}`, true,  'committed', THEME.green, 'bold 11px system-ui');
-    drawVersionRow(cx, by + 47, `v${latestId}`,         false, 'in-flight', THEME.amber, 'bold 11px system-ui');
-  }
-
+  drawLedgerVersionRows(cx, by, latestId, majorityCommitId, isLost, hasCommitted, hasInFlight);
   ctx.restore();
 }
 
@@ -389,90 +390,74 @@ function drawHoverMidpoint(mx, my, strokeColor, iconColor) {
   ctx.fillText('\u2702', mx, my); ctx.textBaseline = 'alphabetic';
 }
 
-function drawReplicationLinks() {
-  const nodeKeys = Object.keys(state.nodes);
-  const pairs = [];
-  for (let i = 0; i < nodeKeys.length; i++) {
-    for (let j = i + 1; j < nodeKeys.length; j++) {
-      pairs.push([nodeKeys[i], nodeKeys[j]]);
+function drawSingleReplicationLink(aKey, bKey) {
+  const nodeA = state.nodes[aKey];
+  const nodeB = state.nodes[bKey];
+  const linkKey = getLinkBetween(aKey, bKey);
+  if (!linkKey) return;
+  const linked = state.links[linkKey];
+  const broken = !linked || !nodeA.alive || !nodeB.alive;
+  const hovered = hoverTarget && hoverTarget.type === 'link' && hoverTarget.key === linkKey;
+  const isSecSec = aKey !== state.primaryKey && bKey !== state.primaryKey;
+  ctx.save();
+  ctx.strokeStyle = hovered ? THEME.linkHover : broken ? THEME.linkBroken : isSecSec ? THEME.linkSecSec : THEME.linkDefault;
+  ctx.lineWidth = hovered ? STROKE_HOVER : isSecSec ? STROKE_SEC_SEC : 2;
+  ctx.setLineDash(isSecSec ? [2, 4] : [5, 4]);
+  ctx.beginPath(); ctx.moveTo(nodeA.x, nodeA.y); ctx.lineTo(nodeB.x, nodeB.y); ctx.stroke();
+  ctx.setLineDash([]);
+  const mx = (nodeA.x + nodeB.x) / 2, my = (nodeA.y + nodeB.y) / 2;
+  if (!nodeA.alive || !nodeB.alive) {
+    drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
+  } else if (!linked) {
+    drawBrokenMidpoint(mx, my, THEME.amberDarkBg, THEME.amber);
+  } else if (hovered) {
+    drawHoverMidpoint(mx, my, THEME.linkHoverMid, THEME.blue);
+    if (isSecSec) {
+      ctx.font = FONT_SMALL; ctx.fillStyle = THEME.textSecondary; ctx.textBaseline = 'top';
+      ctx.fillText('Heartbeat only \u2014 no replication', mx, my + 14);
     }
   }
-
-  pairs.forEach(([aKey, bKey]) => {
-    const nodeA = state.nodes[aKey];
-    const nodeB = state.nodes[bKey];
-    const linkKey = getLinkBetween(aKey, bKey);
-    if (!linkKey) return;
-    const linked = state.links[linkKey];
-    const broken = !linked || !nodeA.alive || !nodeB.alive;
-    const hoverLinkKey = linkKey;
-    const hovered = hoverTarget && hoverTarget.type === 'link' && hoverTarget.key === hoverLinkKey;
-    // Role-based, not link-key-based — correct after election when roles swap
-    const isSecSec = aKey !== state.primaryKey && bKey !== state.primaryKey;
-    ctx.save();
-    ctx.strokeStyle = hovered ? THEME.linkHover : broken ? THEME.linkBroken : isSecSec ? THEME.linkSecSec : THEME.linkDefault;
-    ctx.lineWidth = hovered ? STROKE_HOVER : isSecSec ? STROKE_SEC_SEC : 2;
-    ctx.setLineDash(isSecSec ? [2, 4] : [5, 4]);
-    ctx.beginPath(); ctx.moveTo(nodeA.x, nodeA.y); ctx.lineTo(nodeB.x, nodeB.y); ctx.stroke();
-    ctx.setLineDash([]);
-    const mx = (nodeA.x + nodeB.x) / 2, my = (nodeA.y + nodeB.y) / 2;
-    if (!nodeA.alive || !nodeB.alive) {
-      drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
-    } else if (!linked) {
-      drawBrokenMidpoint(mx, my, THEME.amberDarkBg, THEME.amber);
-    } else if (hovered) {
-      drawHoverMidpoint(mx, my, THEME.linkHoverMid, THEME.blue);
-      if (isSecSec) {
-        ctx.font = FONT_SMALL; ctx.fillStyle = THEME.textSecondary; ctx.textBaseline = 'top';
-        ctx.fillText('Heartbeat only \u2014 no replication', mx, my + 14);
-      }
-    }
-    ctx.restore();
-  });
+  ctx.restore();
 }
 
-function drawWriteClientLine() {
-  const targetNode = state.nodes[effectiveWriteTarget()];
-  const wc = state.writeClient;
-  const linked = state.links.wp;
-  const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === 'wp';
+function drawReplicationLinks() {
+  const nodeKeys = Object.keys(state.nodes);
+  for (let i = 0; i < nodeKeys.length; i++) {
+    for (let j = i + 1; j < nodeKeys.length; j++) {
+      drawSingleReplicationLink(nodeKeys[i], nodeKeys[j]);
+    }
+  }
+}
 
+function drawClientLine(client, targetNode, linkKey, colors) {
+  const linked = state.links[linkKey];
+  const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === linkKey;
   ctx.save();
-  ctx.strokeStyle = hovered ? THEME.wLinkHover : !linked ? THEME.linkDeadMid : THEME.wLinkOk;
+  ctx.strokeStyle = hovered ? colors.hover : !linked ? THEME.linkDeadMid : colors.ok;
   ctx.lineWidth = hovered ? STROKE_HOVER : STROKE_DEFAULT; ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(wc.x, wc.y + CLIENT_RADIUS); ctx.lineTo(targetNode.x, targetNode.y - NODE_RADIUS);
+  ctx.beginPath(); ctx.moveTo(client.x, client.y + CLIENT_RADIUS); ctx.lineTo(targetNode.x, targetNode.y - NODE_RADIUS);
   ctx.stroke(); ctx.setLineDash([]);
-
-  const mx = (wc.x + targetNode.x) / 2, my = (wc.y + CLIENT_RADIUS + targetNode.y - NODE_RADIUS) / 2;
+  const mx = (client.x + targetNode.x) / 2, my = (client.y + CLIENT_RADIUS + targetNode.y - NODE_RADIUS) / 2;
   if (!linked) {
     drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
   } else if (hovered) {
-    drawHoverMidpoint(mx, my, THEME.wLinkHoverMid, THEME.wLinkHoverTxt);
+    drawHoverMidpoint(mx, my, colors.hoverMid, colors.hoverTxt);
   }
   ctx.restore();
+}
+
+function drawWriteClientLine() {
+  drawClientLine(state.writeClient, state.nodes[effectiveWriteTarget()], 'wp',
+    { hover: THEME.wLinkHover, ok: THEME.wLinkOk, hoverMid: THEME.wLinkHoverMid, hoverTxt: THEME.wLinkHoverTxt });
 }
 
 function drawReadClientLine(rcVal, readPref) {
   const tKey = resolveReadTarget(rcVal, readPref);
   if (!tKey) return;
   const targetNode = state.nodes[tKey];
-  const rc = state.readClient;
-  const linked = state.links.rp;
-  const hovered = hoverTarget && hoverTarget.type === 'clientLink' && hoverTarget.key === 'rp';
-
-  ctx.save();
-  ctx.strokeStyle = hovered ? THEME.rLinkHover : !linked ? THEME.linkDeadMid : targetNode.alive ? THEME.rLinkOk : THEME.rLinkDead;
-  ctx.lineWidth = hovered ? STROKE_HOVER : STROKE_DEFAULT; ctx.setLineDash([4, 4]);
-  ctx.beginPath(); ctx.moveTo(rc.x, rc.y + CLIENT_RADIUS); ctx.lineTo(targetNode.x, targetNode.y - NODE_RADIUS);
-  ctx.stroke(); ctx.setLineDash([]);
-
-  const mx = (rc.x + targetNode.x) / 2, my = (rc.y + CLIENT_RADIUS + targetNode.y - NODE_RADIUS) / 2;
-  if (!linked) {
-    drawBrokenMidpoint(mx, my, THEME.redDarkBg, THEME.red);
-  } else if (hovered) {
-    drawHoverMidpoint(mx, my, THEME.rLinkHoverMid, THEME.blue);
-  }
-  ctx.restore();
+  const okColor = targetNode.alive ? THEME.rLinkOk : THEME.rLinkDead;
+  drawClientLine(state.readClient, targetNode, 'rp',
+    { hover: THEME.rLinkHover, ok: okColor, hoverMid: THEME.rLinkHoverMid, hoverTxt: THEME.blue });
 }
 
 function leafColorForNode(node, role, isIsolated) {
@@ -544,35 +529,32 @@ function versionBadgeColor(v) {
 
 function versionBadgeText(v) { return v === 0 ? '\u2014' : `v${v}`; }
 
+function drawBadgeFrame(bx, by, bw, bh, borderColor, rowH) {
+  ctx.fillStyle = THEME.badgeBg;
+  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 5); ctx.fill();
+  ctx.strokeStyle = borderColor; ctx.lineWidth = 1.4;
+  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, 5); ctx.stroke();
+  ctx.strokeStyle = THEME.badgeDivider; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(bx + 4, by + rowH); ctx.lineTo(bx + bw - 4, by + rowH); ctx.stroke();
+}
+
 function drawNodeDocBadge(node) {
   const mem  = node.memoryVersion;
   const disk = node.journalVersion;
-
-  const bw = DOC_BADGE_WIDTH, rowH = DOC_BADGE_ROW_H, divider = 1, br = 5;
-  const bh = rowH * 2 + divider;
+  const bw = DOC_BADGE_WIDTH, rowH = DOC_BADGE_ROW_H;
+  const bh = rowH * 2 + 1;
   const bx = node.x - bw / 2, by = node.y + NODE_RADIUS + 12;
   const memColor  = versionBadgeColor(mem);
   const diskColor = versionBadgeColor(disk);
-  const borderColor = mem > disk ? THEME.amber : memColor;
 
-  ctx.fillStyle = THEME.badgeBg;
-  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, br); ctx.fill();
-  ctx.strokeStyle = borderColor; ctx.lineWidth = 1.4;
-  ctx.beginPath(); ctx.roundRect(bx, by, bw, bh, br); ctx.stroke();
-
-  ctx.strokeStyle = THEME.badgeDivider; ctx.lineWidth = 1;
-  ctx.beginPath(); ctx.moveTo(bx + 4, by + rowH); ctx.lineTo(bx + bw - 4, by + rowH); ctx.stroke();
+  drawBadgeFrame(bx, by, bw, bh, mem > disk ? THEME.amber : memColor, rowH);
 
   ctx.font = FONT_TINY; ctx.textAlign = 'left';
   ctx.fillStyle = THEME.textHint; ctx.fillText('MEM', bx + 5, by + 11);
   ctx.fillStyle = THEME.textHint; ctx.fillText('DISK', bx + 5, by + rowH + 12);
-
   ctx.font = FONT_VALUE; ctx.textAlign = 'right';
-  ctx.fillStyle = memColor;
-  ctx.fillText(versionBadgeText(mem), bx + bw - 6, by + 13);
-
-  ctx.fillStyle = diskColor;
-  ctx.fillText(versionBadgeText(disk), bx + bw - 6, by + rowH + 13);
+  ctx.fillStyle = memColor;  ctx.fillText(versionBadgeText(mem), bx + bw - 6, by + 13);
+  ctx.fillStyle = diskColor; ctx.fillText(versionBadgeText(disk), bx + bw - 6, by + rowH + 13);
 
   if (mem > 0 && mem > disk) {
     ctx.fillStyle = THEME.amberAlpha88; ctx.font = FONT_SMALL; ctx.textAlign = 'center';
@@ -605,22 +587,7 @@ function drawWriteClient(wVal) {
   ctx.restore();
 }
 
-function drawReadClient(rcVal) {
-  const client = state.readClient;
-  const sessionActive = !!client.sessionActive;
-  const stroke = client.phase === 'received' ? THEME.green : client.phase === 'error' ? THEME.red : THEME.blue;
-  const fill   = client.phase === 'received' ? THEME.greenMidBg : client.phase === 'error' ? THEME.redDarkBg : THEME.blueDarkBg;
-  ctx.save();
-  if (sessionActive) {
-    ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS + HOVER_RING_OFFSET, 0, Math.PI*2);
-    ctx.strokeStyle = THEME.amber; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
-    ctx.stroke(); ctx.setLineDash([]);
-  }
-  ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS, 0, Math.PI*2);
-  ctx.fillStyle = fill; ctx.fill();
-  ctx.strokeStyle = stroke; ctx.lineWidth = STROKE_CLIENT_BORDER; ctx.stroke();
-  ctx.fillStyle = THEME.clientText; ctx.font = FONT_LABEL; ctx.textAlign = 'center';
-  ctx.fillText('Read', client.x, client.y - 4); ctx.fillText('Client', client.x, client.y + 11);
+function drawReadClientMeta(client, rcVal, sessionActive) {
   ctx.fillStyle = THEME.blue; ctx.font = FONT_SMALL;
   ctx.fillText('rc:' + rcVal, client.x, client.y + CLIENT_RADIUS + CLIENT_META_LINE1_DY);
   let yOff = CLIENT_RADIUS + CLIENT_META_STACK_DY;
@@ -643,6 +610,25 @@ function drawReadClient(rcVal) {
     ctx.font = FONT_SMALL;
     ctx.fillText(`got ${vStr}${suffix}`, client.x, client.y + yOff);
   }
+}
+
+function drawReadClient(rcVal) {
+  const client = state.readClient;
+  const sessionActive = !!client.sessionActive;
+  const stroke = client.phase === 'received' ? THEME.green : client.phase === 'error' ? THEME.red : THEME.blue;
+  const fill   = client.phase === 'received' ? THEME.greenMidBg : client.phase === 'error' ? THEME.redDarkBg : THEME.blueDarkBg;
+  ctx.save();
+  if (sessionActive) {
+    ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS + HOVER_RING_OFFSET, 0, Math.PI*2);
+    ctx.strokeStyle = THEME.amber; ctx.lineWidth = 2; ctx.setLineDash([4, 3]);
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  ctx.beginPath(); ctx.arc(client.x, client.y, CLIENT_RADIUS, 0, Math.PI*2);
+  ctx.fillStyle = fill; ctx.fill();
+  ctx.strokeStyle = stroke; ctx.lineWidth = STROKE_CLIENT_BORDER; ctx.stroke();
+  ctx.fillStyle = THEME.clientText; ctx.font = FONT_LABEL; ctx.textAlign = 'center';
+  ctx.fillText('Read', client.x, client.y - 4); ctx.fillText('Client', client.x, client.y + 11);
+  drawReadClientMeta(client, rcVal, sessionActive);
   ctx.restore();
 }
 
@@ -760,6 +746,18 @@ function updateWriteStatusView(wBox) {
   else                        wBox.innerHTML = TEXTS.consistency.inFlight(vid, acks, isDefault, safetyNote);
 }
 
+function readStatusHTML(rcVal, ver, sessionSuffix) {
+  const vStr = ver.id > 0 ? `v${ver.id}` : 'none';
+  if (ver.id === 0) {
+    const reason = (rcVal === 'local' || rcVal === 'available')
+      ? 'Node has no data yet.'
+      : `No majority-confirmed data exists (latest v${state.doc.latestId} still in-flight).`;
+    return TEXTS.consistency.readNone(rcVal, reason, sessionSuffix);
+  }
+  if (ver.dirty) return TEXTS.consistency.dirtyRead(vStr, rcVal, state.doc.majorityCommitId, sessionSuffix);
+  return TEXTS.consistency.safeRead(vStr, rcVal, sessionSuffix);
+}
+
 function updateReadStatusView(rBox) {
   const rc = state.readClient;
   const rcVal = getSelectedReadConcern();
@@ -779,19 +777,7 @@ function updateReadStatusView(rBox) {
     return;
   }
   if (rc.lastReceivedVersion === null) return;
-
-  const ver = rc.lastReceivedVersion;
-  const vStr = ver.id > 0 ? `v${ver.id}` : 'none';
-  if (ver.id === 0) {
-    const reason = (rcVal === 'local' || rcVal === 'available')
-      ? 'Node has no data yet.'
-      : `No majority-confirmed data exists (latest v${state.doc.latestId} still in-flight).`;
-    rBox.innerHTML = TEXTS.consistency.readNone(rcVal, reason, sessionSuffix);
-  } else if (ver.dirty) {
-    rBox.innerHTML = TEXTS.consistency.dirtyRead(vStr, rcVal, state.doc.majorityCommitId, sessionSuffix);
-  } else {
-    rBox.innerHTML = TEXTS.consistency.safeRead(vStr, rcVal, sessionSuffix);
-  }
+  rBox.innerHTML = readStatusHTML(rcVal, rc.lastReceivedVersion, sessionSuffix);
 }
 
 function updateConsistencyViews() {

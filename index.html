@@ -7,14 +7,14 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>MongoDB Read &amp; Write Concerns Playground</title>
-  <link rel="stylesheet" href="css/style.css?v=28" />
-  <script src="js/theme.js?v=28"></script>
+  <link rel="stylesheet" href="css/style.css?v=30" />
+  <script src="js/theme.js?v=30"></script>
 </head>
 <body>
 
 <!-- Welcome popup (first visit only) -->
-<div class="welcome-overlay" id="welcome-overlay">
-  <div class="welcome-popup">
+<div class="modal-overlay welcome-overlay" id="welcome-overlay">
+  <div class="modal-box welcome-popup">
     <h2>Welcome :)</h2>
     <p>This tool helps you understand how write and read concerns work in MongoDB.</p>
     <p>It makes some simplifications for clarity and is not part of the official MongoDB documentation and not maintained by MongoDB.</p>
@@ -25,8 +25,8 @@
 </div>
 
 <!-- Mobile hint popup -->
-<div class="mobile-overlay" id="mobile-overlay">
-  <div class="mobile-popup">
+<div class="modal-overlay mobile-overlay" id="mobile-overlay">
+  <div class="modal-box mobile-popup">
     <h2>Heads up</h2>
     <p>This tool is designed for tablets and desktops. On mobile devices, please use landscape mode for the best experience.</p>
     <button id="btn-dismiss-mobile">Got it</button>
@@ -41,7 +41,7 @@
 <!-- Topology hint + Reset -->
 <div class="topo-bar" id="topo-bar">
   <span class="topo-hint" id="topo-hint">Click nodes to toggle health · Click links to partition · Click clients repeatedly to cycle through target nodes · Drag clients to reposition</span>
-  <div style="display:flex;gap:5px">
+  <div class="topo-actions">
     <button class="sec" id="btn-reset">Reset ↺</button>
     <button class="sec theme-toggle" id="btn-theme-toggle">☀</button>
   </div>
@@ -184,7 +184,7 @@
 </div>
 
 <footer>
-  <div style="margin-bottom:6px;font-style:italic">
+  <div class="footer-disclaimer">
     This tool is NOT part of the official MongoDB documentation and not maintained by MongoDB.
     It is an educational tool that simplifies workflows and omits details for clarity. Always consult the
     <a href="https://www.mongodb.com/docs/manual/" target="_blank" rel="noopener">official MongoDB documentation</a>
@@ -195,29 +195,29 @@
     Author: <a href="https://www.linkedin.com/in/robert-richter-27b46812b/" target="_blank" rel="noopener">Robert Richter</a>
     &nbsp;·&nbsp; <a href="https://github.com/robertrichtermongodb/mongodbtuneableconsistencyplayground" target="_blank" rel="noopener">View on GitHub</a>
   </div>
-  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--footerBorder)">
+  <div class="footer-rule">
     Want to learn more about MongoDB's schema validation? Try the <a href="https://robertrichtermongodb.github.io/mongodbschemavalidationvisualizer/" target="_blank" rel="noopener">Schema Validator Playground</a>
   </div>
-  <div style="margin-top:8px;padding-top:8px;border-top:1px solid var(--footerBorder)">
+  <div class="footer-rule">
     <a href="https://www.mongodb.com/docs/manual/reference/read-concern/" target="_blank" rel="noopener">MongoDB Docs: Read Concern</a>
     &nbsp;·&nbsp;
     <a href="https://www.mongodb.com/docs/manual/reference/write-concern/" target="_blank" rel="noopener">MongoDB Docs: Write Concern</a>
-    &nbsp;·&nbsp; Last updated: April 10, 2026 01:28 CEST
+    &nbsp;·&nbsp; Last updated: April 10, 2026 18:58 CEST
     &nbsp;·&nbsp; <button id="btn-debug">Debug</button>
   </div>
 </footer>
 
-<script src="js/state.js?v=28"></script>
-<script src="js/logger.js?v=28"></script>
-<script src="js/icons.js?v=28"></script>
-<script src="js/texts.js?v=28"></script>
-<script src="js/animation.js?v=28"></script>
-<script src="js/draw.js?v=28"></script>
-<script src="js/engine.js?v=28"></script>
-<script src="js/write-machine.js?v=28"></script>
-<script src="js/read-steps.js?v=28"></script>
-<script src="js/election-steps.js?v=28"></script>
-<script src="js/tooltips.js?v=28"></script>
-<script src="js/app.js?v=28"></script>
+<script src="js/state.js?v=30"></script>
+<script src="js/logger.js?v=30"></script>
+<script src="js/icons.js?v=30"></script>
+<script src="js/texts.js?v=30"></script>
+<script src="js/animation.js?v=30"></script>
+<script src="js/draw.js?v=30"></script>
+<script src="js/engine.js?v=30"></script>
+<script src="js/write-machine.js?v=30"></script>
+<script src="js/read-steps.js?v=30"></script>
+<script src="js/election-steps.js?v=30"></script>
+<script src="js/tooltips.js?v=30"></script>
+<script src="js/app.js?v=30"></script>
 </body>
 </html>

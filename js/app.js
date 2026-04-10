@@ -160,8 +160,7 @@ function resetScenario() {
 // ═══════════════════════════════════════
 function tipForLink(hit) {
   const tips = TEXTS.canvasTips;
-  const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
-  const pair = pairMap[hit.key];
+  const pair = LINK_PAIR_LABELS[hit.key];
   if (!pair) return '';
   const labelA = state.nodes[pair[0]].label;
   const labelB = state.nodes[pair[1]].label;
@@ -243,8 +242,7 @@ function handleNodeClick(nodeKey) {
 function handleLinkClick(linkKey) {
   if (!linkKey || state.links[linkKey] === undefined) return;
   state.links[linkKey] = !state.links[linkKey];
-  const pairMap = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
-  const pair = pairMap[linkKey];
+  const pair = LINK_PAIR_LABELS[linkKey];
   const label = pair ? `${state.nodes[pair[0]].label} \u2194 ${state.nodes[pair[1]].label}` : linkKey;
   log(`${label}: ${state.links[linkKey] ? 'connected' : 'partitioned'} \u2014 document state preserved.`, state.links[linkKey] ? 'ok' : 'warn');
   if (state.links[linkKey]) checkPartitionHealed();

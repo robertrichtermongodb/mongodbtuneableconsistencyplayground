@@ -1,6 +1,6 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps } = require('./helpers');
+const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps, idleAllPhases, partitionPrimary } = require('./helpers');
 
 const ctx = createContext();
 
@@ -86,7 +86,7 @@ describe('election — rollback of uncommitted writes', () => {
 
     // Primary goes down
     s().nodes.primary.alive = false;
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     // Election
     await runSteps(electionSteps());
@@ -102,7 +102,7 @@ describe('election — rollback of uncommitted writes', () => {
 
     // Write w:1 j:false — stop at ACK before async repl advances majority
     // send + primaryMem + primaryJournal + ACK = 4 steps
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     const m2 = machine(1, false);
     await runMachineSteps(m2, 4);
     assert.equal(s().doc.latestId, 2);
@@ -110,7 +110,7 @@ describe('election — rollback of uncommitted writes', () => {
 
     // Primary down + election
     s().nodes.primary.alive = false;
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runSteps(electionSteps());
 
     assert.equal(s().doc.latestId, 1, 'v1 (majority) survives, v2 rolled back');
@@ -122,7 +122,7 @@ describe('election — rollback of uncommitted writes', () => {
     const m = machine(1, false);
     await runMachineSteps(m, 4);
     s().nodes.primary.alive = false;
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runSteps(electionSteps());
 
     const aliveKeys = Object.keys(s().nodes).filter(k => s().nodes[k].alive);
@@ -138,11 +138,6 @@ describe('election — rollback of uncommitted writes', () => {
 // ─── deferred rollback (partition election) ─────────────────────────────────
 
 describe('election — deferred rollback on partition', () => {
-  function partitionPrimary() {
-    s().links.ps1 = false;
-    s().links.ps2 = false;
-  }
-
   it('old primary retains stale data after partition election', async () => {
     // w:1 — stop after ACK (step 4), before async replication
     const m = machine(1, false);
@@ -150,8 +145,8 @@ describe('election — deferred rollback on partition', () => {
     assert.equal(s().nodes.primary.memoryVersion, 1);
     assert.equal(s().doc.majorityCommitId, 0, 'v1 not yet majority-committed');
 
-    partitionPrimary();
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    partitionPrimary(ctx);
+    idleAllPhases(ctx);
     await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
 
     assert.equal(s().nodes.primary.memoryVersion, 1,
@@ -166,8 +161,8 @@ describe('election — deferred rollback on partition', () => {
     const m = machine(1, false);
     await runMachineSteps(m, 4);
 
-    partitionPrimary();
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    partitionPrimary(ctx);
+    idleAllPhases(ctx);
     await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
     const newPk = s().primaryKey;
     assert.notEqual(newPk, 'primary');
@@ -189,7 +184,7 @@ describe('election — deferred rollback on partition', () => {
     const m = machine(1, false);
     await runMachineSteps(m, 4);
 
-    partitionPrimary();
+    partitionPrimary(ctx);
     await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
 
     for (const k of ['s1', 's2']) {
@@ -204,14 +199,8 @@ describe('election — deferred rollback on partition', () => {
 // ─── split-brain election (primary partitioned, not dead) ───────────────────
 
 describe('split-brain election — primary partitioned', () => {
-  function partitionPrimary() {
-    s().links.ps1 = false;
-    s().links.ps2 = false;
-    // s1s2 stays up — secondaries can communicate
-  }
-
   it('succeeds when primary is alive but partitioned from both secondaries', async () => {
-    partitionPrimary();
+    partitionPrimary(ctx);
     const steps = ctx.buildElectionSteps({ forcePartition: true });
     const titles = await runSteps(steps);
 
@@ -222,7 +211,7 @@ describe('split-brain election — primary partitioned', () => {
   });
 
   it('fails when primary is partitioned AND s1s2 is also down', async () => {
-    partitionPrimary();
+    partitionPrimary(ctx);
     s().links.s1s2 = false;
     const steps = ctx.buildElectionSteps({ forcePartition: true });
     const titles = await runSteps(steps);
@@ -235,14 +224,14 @@ describe('split-brain election — primary partitioned', () => {
   it('picks highest memoryVersion among secondaries', async () => {
     s().nodes.s1.memoryVersion = 2;
     s().nodes.s2.memoryVersion = 5;
-    partitionPrimary();
+    partitionPrimary(ctx);
 
     await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
     assert.equal(s().primaryKey, 's2', 's2 has higher memoryVersion');
   });
 
   it('old primary becomes a Secondary after force election', async () => {
-    partitionPrimary();
+    partitionPrimary(ctx);
     await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
 
     assert.ok(s().nodes.primary.label.startsWith('Secondary'),
@@ -251,7 +240,7 @@ describe('split-brain election — primary partitioned', () => {
   });
 
   it('old primary is isolated after force election (partition still active)', async () => {
-    partitionPrimary();
+    partitionPrimary(ctx);
     await runSteps(ctx.buildElectionSteps({ forcePartition: true }));
 
     assert.equal(ctx.isNodeIsolated('primary'), true,
@@ -274,7 +263,7 @@ describe('election — snapshot session invalidation', () => {
 
     // Election rolls back v1
     s().nodes.primary.alive = false;
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runSteps(electionSteps());
 
     assert.equal(s().readClient.sessionActive, false, 'session should be invalidated');
@@ -289,10 +278,10 @@ describe('election — snapshot session invalidation', () => {
     s().readClient.sessionSnapshotId = 1;
 
     // Write another w:1 then elect — v1 survives
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runMachineToEnd(machine(1, false));
     s().nodes.primary.alive = false;
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runSteps(electionSteps());
 
     assert.equal(s().readClient.sessionActive, true, 'session should survive');

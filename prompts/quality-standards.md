@@ -1,6 +1,6 @@
 # Quality Standards
 
-1. **Modular structure** — Each `js/` file owns one concern: `state.js` (state + helpers), `simulation.js` (machines + steps), `engine.js` (step engines + UI sync), `draw.js` (canvas rendering), `app.js` (events + init). Shared logic goes in `state.js`. Don't mix concerns.
+1. **Modular structure** — Each `js/` file owns one concern: `state.js` (state + helpers), `write-machine.js` / `read-steps.js` / `election-steps.js` (simulation steps), `engine.js` (step engines + UI sync), `draw.js` (canvas rendering), `app.js` (events + init). Shared logic goes in `state.js`. Don't mix concerns.
 2. **Tests green** — `npm test` must pass. Fix broken tests in the same change. No skipped or TODO tests.
 3. **Meaningful tests** — Every test asserts a state transition, error path, or correctness property. Cover happy path + at least one edge case. Remove tests that only check defaults.
 4. **No dead code** — Remove unused functions, commented-out blocks, stale files.
@@ -15,6 +15,13 @@
 # Quality Scorecard (Architectural Fitness Function)
 
 Track these metrics after every major iteration. The scorecard measures structural health — not feature completeness. Each metric uses three thresholds: **GREEN** (target), **YELLOW** (acceptable debt), **RED** (needs attention). Update the baseline snapshot at the bottom whenever the quality-check prompt is run.
+
+### Measurement Rules (MANDATORY)
+
+1. **Always run `node scripts/measure-quality.js` for metrics 1, 2, 3, 5, 6, 7.** Never estimate these manually.
+2. **Snapshot "Previous" column must copy the "Current" column of the prior snapshot verbatim.** Do not re-measure the previous state.
+3. **No metric may regress** in a quality-focused iteration. If the script shows a regression, fix it before recording the snapshot.
+4. **Manual metrics** (4, 8, 9, 11) must state the counting method and list specific instances.
 
 ## Metrics
 
@@ -152,4 +159,60 @@ Each metric: **GREEN = 2, YELLOW = 1, RED = 0**. Maximum: **22** (11 metrics).
 - **Opaque conditionals eliminated:** Added new metric #11. Extracted `isEngineEmpty(eng)`, `isTopologyTarget(hit)`, `hasActiveSnapshotSession()` helpers. Replaced expanded `isEngineActive()` patterns. Extracted named booleans in `primaryState()` and `_autoFinish()`.
 - **Magic number extraction (partial):** 7 font string constants + 11 numeric constants (`STROKE_*`, `DOC_ICON_*_RATIO`, `NODE_*`, `CLIENT_META_*`, `PARTICLE_RADIUS`) covering ~40 replacements. Remaining ~68 magic numbers are mostly single-use pixel offsets with diminishing returns.
 - **Metric added:** "Opaque conditionals" — captures compound boolean expressions that lack semantic naming. Max score now 22 (11 metrics).
+- Zero behavioral change — 130/130 tests passing
+
+## Snapshot — 2026-04-10 (iteration 25: quality refactoring part 4)
+
+*Measured with `node scripts/measure-quality.js` — automated metrics are now deterministic.*
+
+| # | Metric | Previous (corrected) | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 57 (`buildReadSteps`) | 57 (`buildReadSteps`) | 0 | YELLOW |
+| 2 | Functions > 30 lines | 14 | 14 | 0 | RED |
+| 3 | Avg function length | 12.0 | 12.0 | 0 | GREEN |
+| 4 | Magic numbers | ~68 | ~65 | -3 | RED |
+| 5 | Single-char variables | 3 | 3 | 0 | GREEN |
+| 6 | Max nesting depth | 5 (`buildMajorityReadSteps`) | 5 (`buildMajorityReadSteps`) | 0 | RED |
+| 7 | Max file length | 810 (`draw.js`) | 810 (`draw.js`) | 0 | RED |
+| 8 | Mixed-abstraction functions | ~4 | ~4 | 0 | RED |
+| 9 | Duplicated code patterns | ~1 | ~1 | 0 | GREEN |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| 11 | Opaque conditionals | 0 | 0 | 0 | GREEN |
+| | **Total** | **13 / 22** | **13 / 22** | **0** | **Acceptable debt** |
+
+**Measurement correction:** Previous snapshots (iterations 22–24) used manual estimation, which undercounted functions > 30 lines (reported 13, actual 14), miscounted single-char variables (reported 0, actual 3: `W`/`w`/`x`), and underestimated max nesting depth (reported 3–4, actual 5). Added `scripts/measure-quality.js` for deterministic automated measurement. Previous column above shows corrected values. No metrics actually regressed in iteration 25; apparent regressions were measurement inconsistencies.
+
+**Changes:**
+- **Dead code removed:** `getVersionEntry()` (state.js), `buildIssueReadStep()` (read-steps.js), `.btn-group`/`.wip-badge` (style.css)
+- **CSS quality (first pass):** Removed sole `!important`, added `button:focus-visible` and `prefers-reduced-motion`, fixed duplicate `.step-card`, extracted shared `.modal-overlay`/`.modal-box` base classes, replaced 4 inline styles in index.html
+- **Cross-file deduplication:** `LINK_PAIR_LABELS` centralized in state.js (eliminated 3× `pairMap` literals)
+- **Test infrastructure:** Shared `idleAllPhases()` (replaced 22 inline patterns) and `partitionPrimary()` (replaced 2 duplicate local defs) in helpers.js; engine fields now reset between tests
+- **Architecture doc:** Fixed stale `simulation.js` references, updated file list and script load order
+- **Measurement tooling:** Added `scripts/measure-quality.js` for deterministic scorecard metrics (1, 2, 3, 5, 6, 7)
+- Zero behavioral change — 130/130 tests passing
+
+## Snapshot — 2026-04-10 (iteration 26: quality refactoring part 5 — function splitting)
+
+*Measured with `node scripts/measure-quality.js`.*
+
+| # | Metric | Previous | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 57 (`buildReadSteps`) | 32 (`draw`) | **-25** | YELLOW |
+| 2 | Functions > 30 lines | 14 | 4 | **-10** | GREEN |
+| 3 | Avg function length | 12.0 | 11.0 | -1 | GREEN |
+| 4 | Magic numbers | ~65 | ~65 | 0 | RED |
+| 5 | Single-char variables | 3 | 3 | 0 | GREEN |
+| 6 | Max nesting depth | 5 (`buildMajorityReadSteps`) | 4 (`logElectionResult`) | **-1** | YELLOW |
+| 7 | Max file length | 810 (`draw.js`) | 797 (`draw.js`) | -13 | RED |
+| 8 | Mixed-abstraction functions | ~4 | ~3 | -1 | RED |
+| 9 | Duplicated code patterns | ~1 | ~0 | -1 | GREEN |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| 11 | Opaque conditionals | 0 | 0 | 0 | GREEN |
+| | **Total** | **13 / 22** | **17 / 22** | **+4** | **Acceptable debt** |
+
+**Changes:**
+- **13 functions split** across `read-steps.js`, `election-steps.js`, `write-machine.js`, `draw.js`. Extracted: `buildDisconnectedStep`, `buildIssueReadStep`, `buildNoTargetStep`, `buildConcernSteps`, `buildQuorumFailureStep`, `buildCampaignAndElectedSteps`, `wmValidateSendTarget`, `wmRecordAck`, `drawLedgerVersionRows`, `drawSingleReplicationLink`, `drawReadClientMeta`, `drawBadgeFrame`, `drawClientLine` (shared), `buildMajorityFrozenSteps`, `pingAckSecondary`, `buildLinearizableReturnStep`, `buildStandardReturnStep`, `readStatusHTML`
+- **Client line deduplication:** `drawWriteClientLine`/`drawReadClientLine` now share `drawClientLine()` — eliminated ~20 lines of near-identical code
+- **Measurement script:** Added `scripts/measure-quality.js` for deterministic, repeatable scorecard. Corrected iteration 25 snapshot (measurement inconsistencies, not actual regressions)
+- **Measurement rules:** Added mandatory rules to quality-standards.md preventing future estimation-based measurement
 - Zero behavioral change — 130/130 tests passing

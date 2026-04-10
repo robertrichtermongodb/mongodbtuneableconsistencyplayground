@@ -1,6 +1,6 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps } = require('./helpers');
+const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps, idleAllPhases } = require('./helpers');
 
 const ctx = createContext();
 
@@ -13,10 +13,7 @@ function machine(w, j) { return ctx.createWriteMachine(w, j); }
 // Pre-populate a majority-committed v1 for read tests that need data
 async function writeV1() {
   await runMachineToEnd(machine('majority', false));
-  // Reset client phases so reads start clean
-  s().writeClient.phase = 'idle';
-  s().readClient.phase = 'idle';
-  Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+  idleAllPhases(ctx);
 }
 
 // ─── rc:local ───────────────────────────────────────────────────────────────
@@ -46,7 +43,7 @@ describe('rc:local — reads memoryVersion', () => {
     await runMachineSteps(m, 4);
     s().writeClient.phase = 'idle';
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     assert.equal(s().doc.majorityCommitId, 0, 'w:1 ACK before repl should not majority-commit');
     assert.equal(s().nodes.primary.memoryVersion, 1);
@@ -63,7 +60,7 @@ describe('rc:local — reads memoryVersion', () => {
     // Give primary a higher memoryVersion so we can tell if it was read from
     s().nodes.primary.memoryVersion = 99;
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     const steps = readSteps('local', 'secondaryPreferred');
     const titles = await runSteps(steps);
@@ -93,7 +90,7 @@ describe('rc:majority — reads majorityCommitId', () => {
     const m = machine(1, false);
     await runMachineSteps(m, 4);
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     const steps = readSteps('majority', 'primary');
     const titles = await runSteps(steps);
@@ -106,7 +103,7 @@ describe('rc:majority — reads majorityCommitId', () => {
     s().nodes.s1.alive = false;
     s().nodes.s2.alive = false;
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     const steps = readSteps('majority', 'primary');
     const titles = await runSteps(steps);
@@ -134,7 +131,7 @@ describe('rc:majority — reads majorityCommitId', () => {
     s().readClient.targetNode = 'primary';
     s().writeClient.phase = 'idle';
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     const steps = readSteps('majority', 'primary');
     const titles = await runSteps(steps);
@@ -165,7 +162,7 @@ describe('rc:linearizable', () => {
     s().nodes.s1.alive = false;
     s().nodes.s2.alive = false;
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     const steps = readSteps('linearizable', 'primary');
     await runSteps(steps);
@@ -176,7 +173,7 @@ describe('rc:linearizable', () => {
   it('blocks when secondaries die AFTER steps are built (runtime check)', async () => {
     await writeV1();
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     // Build steps while all nodes are alive
     const steps = readSteps('linearizable', 'primary');
@@ -199,7 +196,7 @@ describe('rc:linearizable', () => {
     await writeV1();
     assert.equal(s().doc.majorityCommitId, 1);
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     // Build steps while majorityCommitId=1
     const steps = readSteps('linearizable', 'primary');
@@ -246,14 +243,14 @@ describe('rc:snapshot', () => {
 
     // Do another write — v2
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runMachineToEnd(machine('majority', false));
 
     assert.equal(s().doc.majorityCommitId, 2);
 
     // Second read with same snapshotOverrideId — should still return v1
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     const steps2 = readSteps('snapshot', 'primary', snapId);
     await runSteps(steps2);
     assert.equal(s().readClient.lastReceivedVersion.id, snapId,
@@ -290,7 +287,7 @@ describe('primary dead — read preference fallback', () => {
     await writeV1();
     s().nodes.primary.alive = false;
     s().readClient.phase = 'idle';
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
 
     const steps = readSteps('local', 'primaryPreferred');
     const titles = await runSteps(steps);

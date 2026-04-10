@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-04-09 (Iteration 22: deferred rollback — partition election only caps winning-partition nodes; isolated old primary retains stale data until reconnection).*
+*Last updated 2026-04-10 (Iteration 26: quality refactoring part 5 — function splitting, client line deduplication, deterministic measurement tooling).*
 
 ---
 
@@ -19,14 +19,18 @@ index.html              — layout, popups, script tags, footer (no inline CSS o
 css/style.css           — all CSS (variables driven by theme.js)
 js/
   theme.js              — design tokens (dark/light), CSS variable injection, toggle logic
-  state.js              — shared state, doc helpers, resolveReadTarget, getLinkBetween
+  state.js              — shared state, doc helpers, LINK_PAIR_LABELS, resolveReadTarget, getLinkBetween
   logger.js             — log() function (separated to break circular dep)
   icons.js              — SVG Path2D constants (ICON_LEAF, ICON_RS)
   texts.js              — all user-facing strings (step titles, tooltips, explanations, canvas tips)
+  animation.js          — particle animation loop, easing, skipAnimations control
   draw.js               — canvas rendering, hit testing, consistency overlays, layout
   engine.js             — step engines, runMachine, arrayMachine, syncButtons, showStepPanel, auto-finish
-  simulation.js         — createWriteMachine(), buildReadSteps(), buildElectionSteps()
-  app.js                — custom tooltips, non-default badge, event handlers, popup logic, init
+  write-machine.js      — createWriteMachine() — lazy write step generator
+  read-steps.js         — buildReadSteps() — pre-built read step arrays
+  election-steps.js     — buildElectionSteps() — pre-built election step arrays
+  tooltips.js           — custom tooltip component (delegated mouseenter/mouseleave)
+  app.js                — non-default badge, event handlers, popup logic, scenario panel, init
 test/
   helpers.js            — VM-based test harness loading source files with browser stubs
   state.test.js         — unit tests for state.js pure functions
@@ -53,7 +57,7 @@ logs/iterations/          — iteration logs (01–20) + TEMPLATE.md
 index.v1–v6.html        — legacy HTML snapshots (not used)
 ```
 
-Script load order: `theme.js` (in `<head>`) → `state.js → logger.js → icons.js → texts.js → draw.js → engine.js → simulation.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
+Script load order: `theme.js` (in `<head>`) → `state.js → logger.js → icons.js → texts.js → animation.js → draw.js → engine.js → write-machine.js → read-steps.js → election-steps.js → tooltips.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
 
 Test runner: Node.js built-in `node --test` (Node 18+). Run with `npm test`. Tests use `node:vm` to load source files in an isolated context with browser globals stubbed.
 
@@ -189,7 +193,7 @@ Uses `PANEL_EL_IDS` lookup map (not string manipulation). Step explain text rend
 
 ---
 
-## 5. Simulation (`js/simulation.js`)
+## 5. Simulation (`js/write-machine.js`, `js/read-steps.js`, `js/election-steps.js`)
 
 ### `createWriteMachine(w, j)` — lazy step generator
 
@@ -431,7 +435,7 @@ Welcome popup shown once per browser (uses `localStorage` key `tcp-welcome-dismi
 
 ### Test harness (`test/helpers.js`)
 
-Uses `node:vm` to load `theme.js`, `state.js`, `texts.js`, `simulation.js`, and `engine.js` into an isolated V8 context with browser globals stubbed:
+Uses `node:vm` to load `theme.js`, `state.js`, `texts.js`, `write-machine.js`, `read-steps.js`, `election-steps.js`, and `engine.js` into an isolated V8 context with browser globals stubbed:
 - `log`, `draw`, `startAnimLoop` → no-ops
 - `awaitParticle` → immediately calls `onArrive` callback and resolves
 - `skipAnimations = true` → `delay()` resolves instantly
@@ -441,7 +445,7 @@ Uses `node:vm` to load `theme.js`, `state.js`, `texts.js`, `simulation.js`, and 
 
 | File | Tests | Covers |
 |---|---|---|
-| `state.test.js` | ~56 | `journalFlush`, `crashNode`, `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget` (incl. manual targeting), `getServedVersion`, `isReachableForWrite`, `getLinkBetween` (s1↔s2), `getPartition`, `isPrimaryPartitioned`, `effectiveWriteTarget` (incl. targetNode override), `isNodeIsolated`, `syncRejoiningNode` (catch-up, rollback, isolation guard, idempotency, post-election) |
+| `state.test.js` | 57 | `journalFlush`, `crashNode`, `recoverNode`, `advanceMajorityCommit`, `recomputeMajorityCommit`, `resolveReadTarget` (incl. manual targeting), `getServedVersion`, `isReachableForWrite`, `getLinkBetween` (s1↔s2), `getPartition`, `isPrimaryPartitioned`, `effectiveWriteTarget` (incl. targetNode override), `isNodeIsolated`, `syncRejoiningNode` (catch-up, rollback, isolation guard, idempotency, post-election) |
 | `machine.test.js` | ~35 | Write machine: w:1/2/3/majority/0, j:true/false, pre-existing topology (secondaries down, link partitioned), partitioned primary w:1/majority, post-force-election writes, client targeting (write-to-secondary error, target-down error) |
 | `reads.test.js` | ~17 | Read steps: rc:local, rc:majority, rc:linearizable, rc:snapshot, reader disconnect, fallback |
 | `election.test.js` | ~18 | Election: happy path, quorum failure, rollback, deferred rollback on partition (stale retention, reconnection sync, partition-scoped capping), snapshot invalidation, split-brain election (partition-aware, winner selection, old primary becomes secondary, isolated detection) |
@@ -504,6 +508,9 @@ Uses `node:vm` to load `theme.js`, `state.js`, `texts.js`, `simulation.js`, and 
 - **Non-default config badge** on `w` dropdown
 - Test suite (~130 tests) covering state helpers, write machine, read steps, elections, deferred rollback, split-brain scenarios, client targeting, topology locking, and rejoining node sync
 - **Topology locking** — UI blocks all node/link/client-link clicks while any engine is active. Eliminates mid-operation topology change complexity (removed `guardRun`, `guardRunAlive`, `primaryUnavailableStep`, `_guardAbort`, `endAsyncWork` — ~80 lines of guard code). Cursor shows `not-allowed` on locked elements.
+- **`LINK_PAIR_LABELS`** centralized in `state.js` — single source of truth for link-to-node-pair mappings (eliminated 3× duplication across `app.js` and `draw.js`)
+- **CSS quality pass** — dead rules removed, `!important` eliminated, `button:focus-visible` and `prefers-reduced-motion` added, inline styles extracted, popup overlay duplication merged into shared base classes
+- **Test infrastructure** — shared `idleAllPhases()` and `partitionPrimary()` helpers, engine field resets in `resetState()`
 
 ### Open
 

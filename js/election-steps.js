@@ -70,31 +70,20 @@ function logElectionResult(uncommitted, oldPk, oldLabel, forcePartition) {
   }
 }
 
-function buildElectionSteps(opts) {
-  const forcePartition = opts && opts.forcePartition;
-  const pk = state.primaryKey;
-  const majorityNeeded = majorityThreshold();
-  const candidates = selectElectionCandidates(pk, forcePartition, majorityNeeded);
+function buildQuorumFailureStep(candidates, totalAlive, majorityNeeded, forcePartition) {
+  const reason = candidates.length === 0
+    ? (forcePartition ? `No reachable secondary partition forms a majority.` : `No alive secondaries available.`)
+    : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members ${forcePartition ? 'in the partition' : 'alive'} - need ${majorityNeeded} (majority) to hold an election.`;
+  const tImp = TEXTS.election.impossible(reason);
+  return [{
+    title: tImp.title, explain: tImp.explain,
+    run: async () => { log(`Election aborted - ${reason}`, 'err'); draw(); },
+  }];
+}
 
-  const totalAlive = forcePartition
-    ? candidates.length
-    : Object.values(state.nodes).filter(n => n.alive).length;
-
-  if (candidates.length === 0 || totalAlive < majorityNeeded) {
-    const reason = candidates.length === 0
-      ? (forcePartition ? `No reachable secondary partition forms a majority.` : `No alive secondaries available.`)
-      : `Only ${totalAlive} of ${Object.keys(state.nodes).length} voting members ${forcePartition ? 'in the partition' : 'alive'} - need ${majorityNeeded} (majority) to hold an election.`;
-    const tImp = TEXTS.election.impossible(reason);
-    return [{
-      title: tImp.title, explain: tImp.explain,
-      run: async () => { log(`Election aborted - ${reason}`, 'err'); draw(); },
-    }];
-  }
-
-  const winner     = candidates[0];
+function buildCampaignAndElectedSteps(winner, pk, forcePartition) {
   const winnerNode = state.nodes[winner];
   const uncommitted = state.doc.versions.filter(v => v.id > state.doc.majorityCommitId);
-
   const tCamp = TEXTS.election.campaign(winnerNode.label, winnerNode.memoryVersion || 'none');
   const rollbackNote = TEXTS.election.rollbackNote(uncommitted);
   const tElected = TEXTS.election.elected(winnerNode.label, rollbackNote, state.doc.majorityCommitId);
@@ -119,4 +108,19 @@ function buildElectionSteps(opts) {
       },
     },
   ];
+}
+
+function buildElectionSteps(opts) {
+  const forcePartition = opts && opts.forcePartition;
+  const pk = state.primaryKey;
+  const majorityNeeded = majorityThreshold();
+  const candidates = selectElectionCandidates(pk, forcePartition, majorityNeeded);
+  const totalAlive = forcePartition
+    ? candidates.length
+    : Object.values(state.nodes).filter(n => n.alive).length;
+
+  if (candidates.length === 0 || totalAlive < majorityNeeded) {
+    return buildQuorumFailureStep(candidates, totalAlive, majorityNeeded, forcePartition);
+  }
+  return buildCampaignAndElectedSteps(candidates[0], pk, forcePartition);
 }

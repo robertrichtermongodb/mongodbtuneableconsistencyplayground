@@ -97,6 +97,13 @@ function resetState(ctx) {
   ctx.state.writeClient.targetNode = null;
   ctx.state.readClient.targetNode = null;
   ctx.state.particles = [];
+  // Reset engine fields to prevent cross-test leakage
+  for (const eng of [ctx.$writeEngine, ctx.$readEngine, ctx.$electionEngine]) {
+    eng.steps = []; eng.idx = -1; eng.busy = false;
+    eng.done = false; eng.aborted = false;
+    eng._waitResolve = null; eng._machine = null;
+    if (eng._autoFinishId) { clearInterval(eng._autoFinishId); eng._autoFinishId = null; }
+  }
 }
 
 // Drives a machine to completion: calls nextStep() + step.run() in a loop.
@@ -133,4 +140,18 @@ async function runSteps(steps) {
   return titles;
 }
 
-module.exports = { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps };
+// Resets all alive node phases and both client phases to idle.
+// Replaces the ~22 inline `Object.values(...).forEach(...)` calls across tests.
+function idleAllPhases(ctx) {
+  Object.values(ctx.state.nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+  ctx.state.writeClient.phase = 'idle';
+  ctx.state.readClient.phase = 'idle';
+}
+
+// Cuts both primary-to-secondary links (primary isolated, secondaries can talk).
+function partitionPrimary(ctx) {
+  ctx.state.links.ps1 = false;
+  ctx.state.links.ps2 = false;
+}
+
+module.exports = { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps, idleAllPhases, partitionPrimary };

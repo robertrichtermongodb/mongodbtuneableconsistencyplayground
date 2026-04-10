@@ -58,14 +58,15 @@ function setSelectedReadConcern(v)  { document.getElementById('sel-rc').value = 
 function setSelectedReadPref(v)     { document.getElementById('sel-readpref').value = v; }
 
 // ═══════════════════════════════════════
+// LINK TOPOLOGY CONSTANTS
+// ═══════════════════════════════════════
+const LINK_PAIR_LABELS = { ps1: ['primary', 's1'], ps2: ['primary', 's2'], s1s2: ['s1', 's2'] };
+
+// ═══════════════════════════════════════
 // DERIVED CONSTANTS
 // ═══════════════════════════════════════
 function majorityThreshold() {
   return Math.floor(Object.keys(state.nodes).length / 2) + 1;
-}
-
-function getVersionEntry(id) {
-  return state.doc.versions.find(v => v.id === id);
 }
 
 // ═══════════════════════════════════════

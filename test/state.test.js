@@ -1,6 +1,6 @@
 const { describe, it, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
-const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps } = require('./helpers');
+const { createContext, resetState, runMachineToEnd, runMachineSteps, runSteps, idleAllPhases } = require('./helpers');
 
 const ctx = createContext();
 
@@ -500,7 +500,7 @@ describe('syncRejoiningNode — catches up a node that missed writes while down'
 
     s().nodes.primary.alive = false;
     ctx.crashNode('primary');
-    Object.values(s().nodes).forEach(n => { if (n.alive) n.phase = 'idle'; });
+    idleAllPhases(ctx);
     await runSteps(ctx.buildElectionSteps());
     assert.notEqual(s().primaryKey, 'primary');
 
