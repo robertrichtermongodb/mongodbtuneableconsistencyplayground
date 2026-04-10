@@ -12,7 +12,29 @@ const JS_DIR = path.join(__dirname, '..', 'js');
 // We skip icons.js (pure SVG paths) and logger.js / draw.js (replaced by stubs).
 const SOURCE_FILES = ['theme.js', 'state.js', 'texts.js', 'write-machine.js', 'read-steps.js', 'election-steps.js', 'engine.js'];
 
-function createContext() {
+// Select elements need a mutable .value so getSelected*/setSelected* work.
+const SELECT_IDS = ['sel-w', 'sel-j', 'sel-rc', 'sel-readpref'];
+
+function createStubElement() {
+  return {
+    disabled: false, title: '', textContent: '', hidden: false,
+    style: {}, classList: { add() {}, remove() {} },
+    querySelector: () => null, innerHTML: '', value: '',
+    setAttribute() {}, addEventListener: () => {},
+    appendChild() {}, open: true,
+  };
+}
+
+function createElementRegistry() {
+  const registry = {};
+  for (const id of SELECT_IDS) registry[id] = createStubElement();
+  return (id) => registry[id] || (registry[id] = createStubElement());
+}
+
+function createContext(opts) {
+  const scenarioMode = opts && opts.scenarioMode;
+  const getElementById = createElementRegistry();
+
   const ctx = vm.createContext({
     // Timer stubs
     setTimeout:    globalThis.setTimeout,
@@ -27,9 +49,11 @@ function createContext() {
 
     // Browser stubs — no-ops so source files load without error
     log:            () => {},
+    logStep:        () => {},
     draw:           () => {},
     startAnimLoop:  () => {},
-    skipAnimations: true,                   // instant resolution for all delays/particles
+    updateReadActionControls: () => {},
+    skipAnimations: true,
     setSkipAnimations(v) { ctx.skipAnimations = v; },
 
     awaitParticle(_from, _to, _color, _label, onArrive) {
@@ -37,15 +61,9 @@ function createContext() {
       return Promise.resolve();
     },
 
-    // Minimal DOM stubs — only needed if engine.js syncButtons runs
     document: {
-      getElementById: () => ({
-        disabled: false, title: '', textContent: '',
-        style: {}, classList: { add() {}, remove() {} },
-        querySelector: () => null,
-        innerHTML: '',
-        addEventListener: () => {},
-      }),
+      getElementById,
+      createElement: () => createStubElement(),
       documentElement: {
         setAttribute() {},
         style: { setProperty() {} },
@@ -57,6 +75,12 @@ function createContext() {
   for (const file of SOURCE_FILES) {
     const code = fs.readFileSync(path.join(JS_DIR, file), 'utf-8');
     vm.runInContext(code, ctx, { filename: file });
+  }
+
+  // In scenario mode, waitForClick auto-resolves so runMachine drives to
+  // completion without needing button clicks. Same approach as awaitParticle.
+  if (scenarioMode) {
+    vm.runInContext('waitForClick = function() { return Promise.resolve(); }', ctx);
   }
 
   // `const` / `let` declarations inside VM scripts are block-scoped and do NOT
@@ -71,6 +95,10 @@ function createContext() {
     this.$electionEngine  = electionEngine;
     this.$isAnyEngineActive = isAnyEngineActive;
     this.$isTopologyLocked  = isTopologyLocked;
+    this.$runMachine       = runMachine;
+    this.$arrayMachine     = arrayMachine;
+    this.$isEngineActive   = isEngineActive;
+    this.$TEXTS            = TEXTS;
   `, ctx);
 
   // Alias the bridged state as plain `state` for convenience in tests.

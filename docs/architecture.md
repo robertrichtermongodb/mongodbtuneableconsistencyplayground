@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-04-10 (Iteration 27: GPT-5.3 assessment remediation — linearizable-to-secondary error, doc/rule alignment, nesting + function size improvements).*
+*Last updated 2026-04-10 (Iteration 28: scenario integration tests — multi-operation flow testing via real engine pipeline).*
 
 ---
 
@@ -32,12 +32,15 @@ js/
   tooltips.js           — custom tooltip component (delegated mouseenter/mouseleave)
   app.js                — non-default badge, event handlers, popup logic, scenario panel, init
 test/
-  helpers.js            — VM-based test harness loading source files with browser stubs
+  helpers.js            — VM-based test harness loading source files with browser stubs; scenarioMode for engine pipeline
+  scenario-helpers.js   — orchestration helpers (applyScenario, performWrite/Read/Election, topology mutations, assertion helpers)
   state.test.js         — unit tests for state.js pure functions
   machine.test.js       — write machine scenario tests (w:1, w:majority, crash-retarget, bounce, etc.)
   reads.test.js         — read concern + preference scenario tests
   election.test.js      — election scenario tests (quorum, rollback, winner selection)
   topology-lock.test.js — topology locking tests
+  scenarios.test.js     — all 7 predefined UI scenarios as multi-operation integration tests
+  app.test.js           — multi-operation flows: read-after-write, double election, partition reconciliation, engine guards
 package.json            — npm test script (node --test, zero dependencies)
 docs/
   architecture.md       — this file

@@ -244,3 +244,29 @@ Each metric: **GREEN = 2, YELLOW = 1, RED = 0**. Maximum: **22** (11 metrics).
 - **Nesting depth (metric #6 -> GREEN):** Flattened `logElectionResult` (ternary instead of if/else). Extracted 8 `awaitParticle` callbacks into named module-level functions: `onLinearizableArrive`, `onStandardReadArrive`, `wmOnSecondaryMemArrive`, `wmApplyPrimaryMem`, `wmApplyPrimaryJournal`, `wmOnFireForgetArrive`, `wmFireForgetRun`, `wmWcFailureRun`. Extracted `issueReadRun` from `buildIssueReadStep`.
 - **Mixed-abstraction note:** The extracted step-execution helpers are "mixed" by definition (state + draw/log) but unavoidably so — they implement step execution. Genuine architectural mixing (~3 in app.js event handlers) is unchanged.
 - One behavioral change (linearizable-to-secondary error) — 131/131 tests passing
+
+## Snapshot — 2026-04-10 (iteration 28: scenario integration tests)
+
+*Measured with `node scripts/measure-quality.js`.*
+
+| # | Metric | Previous | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 30 (`drawLockHint`) | 30 (`drawLockHint`) | 0 | GREEN |
+| 2 | Functions > 30 lines | 0 | 0 | 0 | GREEN |
+| 3 | Avg function length | 10.4 | 10.4 | 0 | GREEN |
+| 4 | Magic numbers | ~65 | ~65 | 0 | RED |
+| 5 | Single-char variables | 2 | 2 | 0 | GREEN |
+| 6 | Max nesting depth | 3 (`awaitParticle`) | 3 (`awaitParticle`) | 0 | GREEN |
+| 7 | Max file length | 806 (`draw.js`) | 806 (`draw.js`) | 0 | RED |
+| 8 | Mixed-abstraction functions | ~3 | ~3 | 0 | YELLOW |
+| 9 | Duplicated code patterns | ~0 | ~0 | 0 | GREEN |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| 11 | Opaque conditionals | 0 | 0 | 0 | GREEN |
+| | **Total** | **19 / 22** | **19 / 22** | **0** | **Healthy** |
+
+**Changes:**
+- **Scenario integration tests (new):** `test/scenarios.test.js` — all 7 predefined scenarios from TEXTS.scenarios exercised as multi-operation integration tests (safe-write, partition-safe, snapshot-isolation, linearizable, w1-data-loss, dirty-read, fire-forget)
+- **Multi-operation flow tests (new):** `test/app.test.js` — read-after-write consistency (backlog #2), double election (backlog #3), partition reconciliation (backlog #5), engine guards
+- **Test infrastructure:** Extended `test/helpers.js` with element registry (mutable `.value` for selects), `scenarioMode` option (auto-resolves `waitForClick`), bridged `runMachine`/`arrayMachine`/`isEngineActive`/`TEXTS`
+- **Scenario helpers (new):** `test/scenario-helpers.js` — `applyScenario`, `performWrite/Read/Election`, `crashNodeByKey`, `recoverNodeByKey`, `healPartition`, `resetEngines` + 6 named assertion helpers
+- No production code changes — 146/146 tests passing (131 existing + 15 new)
