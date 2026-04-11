@@ -15,6 +15,10 @@ After completing a major change:
    d. Fill every section with specifics: actual file paths, function names, test counts, design decisions.
    e. Describe what IS implemented, not what could be. Set Status to "Complete" or "In Progress".
    f. Update the "Last updated" line in the `index.html` footer to today's date AND time (e.g. "April 7, 2026 22:00 CEST"). Always include both date and time — never drop the time component.
+   g. Bump the version number everywhere it appears:
+      - `index.html`: footer `v__` link, header version badge text, and the `data-tip` tooltip in `app.js` (update summary + test count).
+      - `README.md`: shields.io badge in the `#` header, "Current score" line, and add a new row at the top of the Version History table.
+      - **Badge tooltip format:** title line "Good things happened in vNN", then 2–4 checkmark bullet points summarizing key changes, then a closing line with "All NNN tests passing ✔". Do NOT include the quality score in the badge tooltip.
 ```
 
 **Log-worthy:** New user-facing capability, architectural refactor, correctness fix, new test coverage area.

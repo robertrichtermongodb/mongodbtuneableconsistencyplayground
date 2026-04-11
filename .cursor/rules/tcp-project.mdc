@@ -10,7 +10,7 @@ alwaysApply: true
 Single-page vanilla JS app (no build step). Open `index.html` and it works.
 
 ### File load order (must stay in this sequence)
-`theme.js → state.js → logger.js → icons.js → texts.js → animation.js → draw.js → engine.js → write-machine.js → read-steps.js → election-steps.js → tooltips.js → app.js`
+`theme.js → state.js → logger.js → icons.js → texts.js → animation.js → draw.js → status-views.js → engine.js → write-machine.js → read-steps.js → election-steps.js → tooltips.js → app.js`
 
 ### File responsibilities — one concern per file
 | File | Owns |
@@ -22,7 +22,8 @@ Single-page vanilla JS app (no build step). Open `index.html` and it works.
 | `election-steps.js` | `buildElectionSteps()` — pre-built election step arrays. |
 | `engine.js` | Step engine runner (`runMachine`), UI button sync (`syncButtons`). |
 | `animation.js` | Particle animation loop, easing, `skipAnimations` control. |
-| `draw.js` | Canvas rendering, hit testing, layout, consistency overlays. |
+| `draw.js` | Canvas rendering, hit testing, layout. |
+| `status-views.js` | Consistency overlay views (`updateConsistencyViews`), read action controls. |
 | `tooltips.js` | Custom tooltip component (delegated mouseenter/mouseleave). |
 | `app.js` | Event handlers, canvas interaction, popups, init. |
 

@@ -149,6 +149,100 @@ describe('multi-operation flows', () => {
     });
   });
 
+  // ── Backlog #4: Client targeting + reads ─────────────────────────
+
+  describe('client targeting', () => {
+    it('manual read target overrides readPreference', async () => {
+      await performWrite(ctx);
+      assertWriteOutcome(ctx, 'received', 1);
+
+      resetBetweenOps();
+      ctx.state.readClient.targetNode = 's1';
+      ctx.setSelectedReadPref('primary');
+      ctx.setSelectedReadConcern('local');
+      ctx.state.readClient.lastReceivedVersion = null;
+      await performRead(ctx);
+      assertReadResult(ctx, 1, false);
+    });
+
+    it('manual read target to dead node returns no data', async () => {
+      await performWrite(ctx);
+      assertWriteOutcome(ctx, 'received', 1);
+
+      resetBetweenOps();
+      ctx.state.readClient.targetNode = 's2';
+      ctx.state.nodes.s2.alive = false;
+      ctx.setSelectedReadConcern('local');
+      ctx.state.readClient.lastReceivedVersion = null;
+      await performRead(ctx);
+      assert.equal(ctx.state.readClient.phase, 'error',
+        'reading from dead target should error');
+    });
+
+    it('read from isolated secondary returns stale but valid data', async () => {
+      await performWrite(ctx);
+      assertWriteOutcome(ctx, 'received', 1);
+
+      resetBetweenOps();
+      ctx.state.links.ps2 = false;
+      ctx.state.readClient.targetNode = 's2';
+      ctx.setSelectedReadConcern('local');
+      ctx.state.readClient.lastReceivedVersion = null;
+      await performRead(ctx);
+      assertReadResult(ctx, 1, false);
+    });
+
+    it('manual write target overrides primaryKey', () => {
+      assert.equal(ctx.effectiveWriteTarget(), 'primary');
+      ctx.state.writeClient.targetNode = 's1';
+      assert.equal(ctx.effectiveWriteTarget(), 's1');
+    });
+  });
+
+  // ── Backlog #7: cycleClientTarget cycling ───────────────────────
+
+  describe('cycleClientTarget logic', () => {
+    function cycleTarget(client) {
+      const nodeKeys = [null, ...Object.keys(ctx.state.nodes)];
+      const current = client.targetNode;
+      const idx = nodeKeys.indexOf(current);
+      client.targetNode = nodeKeys[(idx + 1) % nodeKeys.length];
+      return client.targetNode;
+    }
+
+    it('write client cycles through null → primary → s1 → s2 → null', () => {
+      const wc = ctx.state.writeClient;
+      assert.equal(wc.targetNode, null);
+      assert.equal(cycleTarget(wc), 'primary');
+      assert.equal(cycleTarget(wc), 's1');
+      assert.equal(cycleTarget(wc), 's2');
+      assert.equal(cycleTarget(wc), null);
+    });
+
+    it('read client cycles through the same sequence', () => {
+      const rc = ctx.state.readClient;
+      assert.equal(rc.targetNode, null);
+      assert.equal(cycleTarget(rc), 'primary');
+      assert.equal(cycleTarget(rc), 's1');
+      assert.equal(cycleTarget(rc), 's2');
+      assert.equal(cycleTarget(rc), null);
+    });
+
+    it('cycling still works after election changes primaryKey', async () => {
+      crashNodeByKey(ctx, 'primary');
+      await performElection(ctx);
+      const newPK = ctx.state.primaryKey;
+      assert.notEqual(newPK, 'primary');
+
+      const rc = ctx.state.readClient;
+      rc.targetNode = null;
+      const first = cycleTarget(rc);
+      assert.equal(first, 'primary', 'node key is still "primary" even after election');
+      const second = cycleTarget(rc);
+      assert.equal(second, 's1');
+    });
+  });
+
   // ── Engine mutual exclusion ──────────────────────────────────────
 
   describe('engine guards', () => {

@@ -553,6 +553,13 @@ syncButtons();
 syncWBadge();
 initButtonTips();
 syncTooltips();
+const vBadge = document.getElementById('version-badge');
+if (vBadge) vBadge.setAttribute('data-tip',
+  'Good things happened in v29\n\n' +
+  '\u2705 Cleaner codebase \u2014 draw.js split into focused modules\n' +
+  '\u2705 More tests \u2014 client targeting & cycling fully covered\n' +
+  '\u2705 Fresh docs \u2014 architecture diagram, updated README\n\n' +
+  'All 153 tests passing \u2714');
 initPopups();
 initScenarios();
 refreshIdlePanels();

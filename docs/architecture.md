@@ -1,6 +1,6 @@
 # MongoDB Concerns Playground — Architecture & State Overview
 
-*Last updated 2026-04-10 (Iteration 28: scenario integration tests — multi-operation flow testing via real engine pipeline).*
+*Last updated 2026-04-10 (Iteration 29: draw.js split, client-targeting tests, docs refresh).*
 
 ---
 
@@ -24,7 +24,8 @@ js/
   icons.js              — SVG Path2D constants (ICON_LEAF, ICON_RS)
   texts.js              — all user-facing strings (step titles, tooltips, explanations, canvas tips)
   animation.js          — particle animation loop, easing, skipAnimations control
-  draw.js               — canvas rendering, hit testing, consistency overlays, layout
+  draw.js               — canvas rendering, hit testing, layout
+  status-views.js       — consistency overlay views, read action controls
   engine.js             — step engines, runMachine, arrayMachine, syncButtons, showStepPanel, auto-finish
   write-machine.js      — createWriteMachine() — lazy write step generator
   read-steps.js         — buildReadSteps() — pre-built read step arrays
@@ -40,7 +41,7 @@ test/
   election.test.js      — election scenario tests (quorum, rollback, winner selection)
   topology-lock.test.js — topology locking tests
   scenarios.test.js     — all 7 predefined UI scenarios as multi-operation integration tests
-  app.test.js           — multi-operation flows: read-after-write, double election, partition reconciliation, engine guards
+  app.test.js           — multi-operation flows: read-after-write, double election, partition reconciliation, client targeting, engine guards
 package.json            — npm test script (node --test, zero dependencies)
 docs/
   architecture.md       — this file
@@ -60,7 +61,90 @@ logs/iterations/          — iteration logs (01–20) + TEMPLATE.md
 index.v1–v6.html        — legacy HTML snapshots (not used)
 ```
 
-Script load order: `theme.js` (in `<head>`) → `state.js → logger.js → icons.js → texts.js → animation.js → draw.js → engine.js → write-machine.js → read-steps.js → election-steps.js → tooltips.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
+Script load order: `theme.js` (in `<head>`) → `state.js → logger.js → icons.js → texts.js → animation.js → draw.js → status-views.js → engine.js → write-machine.js → read-steps.js → election-steps.js → tooltips.js → app.js` (at end of `<body>`). No build step; deployable to GitHub Pages as static files.
+
+### Module Dependency Diagram
+
+The diagram below shows runtime dependencies between JS modules. Arrows point from consumer to provider. Leaf modules (no project dependencies) are at the bottom; `app.js` orchestrates everything from the top.
+
+```mermaid
+graph TD
+    app["app.js<br/><small>event handlers, init</small>"]
+    engine["engine.js<br/><small>step engines, runMachine</small>"]
+    draw["draw.js<br/><small>canvas rendering</small>"]
+    statusViews["status-views.js<br/><small>consistency overlays</small>"]
+    animation["animation.js<br/><small>particles, easing</small>"]
+    writeMachine["write-machine.js<br/><small>lazy write generator</small>"]
+    readSteps["read-steps.js<br/><small>read step arrays</small>"]
+    electionSteps["election-steps.js<br/><small>election step arrays</small>"]
+    tooltips["tooltips.js<br/><small>tooltip component</small>"]
+    state["state.js<br/><small>shared state, helpers</small>"]
+    theme["theme.js<br/><small>design tokens</small>"]
+    texts["texts.js<br/><small>UI strings</small>"]
+    logger["logger.js<br/><small>log()</small>"]
+    icons["icons.js<br/><small>SVG paths</small>"]
+
+    app --> engine
+    app --> draw
+    app --> statusViews
+    app --> writeMachine
+    app --> readSteps
+    app --> electionSteps
+    app --> tooltips
+    app --> state
+    app --> theme
+    app --> texts
+    app --> logger
+
+    engine --> draw
+    engine --> statusViews
+    engine --> state
+    engine --> texts
+    engine --> logger
+    engine --> animation
+
+    draw --> state
+    draw --> theme
+    draw --> texts
+    draw --> icons
+    draw --> engine
+
+    statusViews --> state
+    statusViews --> texts
+
+    animation --> state
+    animation --> draw
+
+    writeMachine --> state
+    writeMachine --> theme
+    writeMachine --> texts
+    writeMachine --> logger
+    writeMachine --> animation
+    writeMachine --> draw
+
+    readSteps --> state
+    readSteps --> theme
+    readSteps --> texts
+    readSteps --> logger
+    readSteps --> animation
+    readSteps --> draw
+
+    electionSteps --> state
+    electionSteps --> texts
+    electionSteps --> logger
+    electionSteps --> draw
+
+    tooltips --> texts
+
+    state -.->|"delay() checks skipAnimations"| animation
+    theme -.->|"applyTheme() calls draw()"| draw
+```
+
+**Key observations:**
+- `state.js`, `texts.js`, `logger.js`, `icons.js`, and `theme.js` are foundation modules with few or no project dependencies.
+- `draw.js` ↔ `engine.js` have a mutual runtime dependency (draw calls engine accessors; engine calls draw). This is safe because neither calls the other at parse time.
+- `app.js` is the orchestration layer that wires everything together.
+- The three "simulation" files (`write-machine.js`, `read-steps.js`, `election-steps.js`) share the same dependency shape: state + theme + texts + logger + animation + draw.
 
 Test runner: Node.js built-in `node --test` (Node 18+). Run with `npm test`. Tests use `node:vm` to load source files in an isolated context with browser globals stubbed.
 
@@ -509,15 +593,16 @@ Uses `node:vm` to load `theme.js`, `state.js`, `texts.js`, `write-machine.js`, `
 - **Dark/light theming** via CSS custom properties driven by `js/theme.js`
 - **Custom tooltip system** with delegated event handling and per-dropdown/per-button definitions
 - **Non-default config badge** on `w` dropdown
-- Test suite (~130 tests) covering state helpers, write machine, read steps, elections, deferred rollback, split-brain scenarios, client targeting, topology locking, and rejoining node sync
+- Test suite (~153 tests) covering state helpers, write machine, read steps, elections, deferred rollback, split-brain scenarios, client targeting, topology locking, rejoining node sync, UI scenarios, and multi-operation flows
 - **Topology locking** — UI blocks all node/link/client-link clicks while any engine is active. Eliminates mid-operation topology change complexity (removed `guardRun`, `guardRunAlive`, `primaryUnavailableStep`, `_guardAbort`, `endAsyncWork` — ~80 lines of guard code). Cursor shows `not-allowed` on locked elements.
 - **`LINK_PAIR_LABELS`** centralized in `state.js` — single source of truth for link-to-node-pair mappings (eliminated 3× duplication across `app.js` and `draw.js`)
 - **CSS quality pass** — dead rules removed, `!important` eliminated, `button:focus-visible` and `prefers-reduced-motion` added, inline styles extracted, popup overlay duplication merged into shared base classes
-- **Test infrastructure** — shared `idleAllPhases()` and `partitionPrimary()` helpers, engine field resets in `resetState()`
+- **Test infrastructure** — shared `idleAllPhases()` and `partitionPrimary()` helpers, engine field resets in `resetState()`, `scenarioMode` for full engine pipeline testing, `scenario-helpers.js` orchestration layer
+- **`status-views.js` extraction** — consistency overlay views and read action controls extracted from `draw.js` into a dedicated module, reducing `draw.js` from 806 to 725 lines
 
 ### Open
 
 | Item | Notes |
 |---|---|
 | **Everything is still global scope** — `<script src>` loading, no ES modules | All functions are global; works but limits tooling and tree-shaking. |
-| **`updateConsistencyViews` called from inside `draw()`** | Re-renders DOM 60×/sec during animation. Should be moved to step transitions only. |
+| **`updateConsistencyViews` called from inside `draw()`** | Re-renders DOM 60×/sec during animation (now in `status-views.js`). Should be moved to step transitions only. |

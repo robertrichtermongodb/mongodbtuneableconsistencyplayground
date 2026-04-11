@@ -11,40 +11,50 @@ Open `index.html` in a browser. No build step, no server. Plain HTML + CSS + van
 ## How to test
 
 ```bash
-node --test test/*.test.js
+npm test
 ```
 
-Test harness (`test/helpers.js`) loads JS source files into a Node VM with browser stubs. All animations are instant in tests.
+Test harness (`test/helpers.js`) loads JS source files into a Node VM with browser stubs. Two modes: basic (`createContext()`) for unit/integration tests, and `scenarioMode` for full engine pipeline tests. All animations are instant in tests.
 
 ## File map
 
 ```
-index.html          — Single page, loads all JS/CSS
-css/style.css       — All styles, CSS custom properties for theming
+index.html              — Single page, loads all JS/CSS
+css/style.css           — All styles, CSS custom properties for theming
 js/
-  theme.js          — Design tokens, dark/light theme
-  state.js          — Central state object + all helper functions
-  texts.js          — ALL user-facing strings (titles, explains, tooltips)
-  simulation.js     — Write machine, read steps, election steps
-  engine.js         — Step engine runner, button sync
-  draw.js           — Canvas rendering, hit testing, layout, animation
-  app.js            — Event handlers, canvas interaction, init
-  icons.js          — SVG path data
-  logger.js         — Log panel helper
+  theme.js              — Design tokens, dark/light theme
+  state.js              — Central state object + all helper functions
+  logger.js             — Log panel helper
+  icons.js              — SVG path data
+  texts.js              — ALL user-facing strings (titles, explains, tooltips)
+  animation.js          — Particle animation loop, easing, skipAnimations control
+  draw.js               — Canvas rendering, hit testing, layout
+  status-views.js       — Consistency overlay views, read action controls
+  engine.js             — Step engine runner, button sync, runMachine
+  write-machine.js      — createWriteMachine() — lazy write step generator
+  read-steps.js         — buildReadSteps() — pre-built read step arrays
+  election-steps.js     — buildElectionSteps() — pre-built election step arrays
+  tooltips.js           — Custom tooltip component
+  app.js                — Event handlers, canvas interaction, client targeting, init
 test/
-  helpers.js        — VM-based test harness
-  state.test.js     — State helpers and partition logic
-  machine.test.js   — Write state machine scenarios
-  reads.test.js     — Read concern step generation
-  election.test.js  — Election and split-brain scenarios
+  helpers.js            — VM-based test harness with browser stubs
+  scenario-helpers.js   — Orchestration helpers for multi-operation integration tests
+  state.test.js         — State helpers and partition logic
+  machine.test.js       — Write state machine scenarios
+  reads.test.js         — Read concern step generation
+  election.test.js      — Election and split-brain scenarios
+  topology-lock.test.js — Topology locking tests
+  scenarios.test.js     — All 7 predefined UI scenarios as integration tests
+  app.test.js           — Multi-operation flows, client targeting, engine guards
 docs/
-  architecture.md   — Full technical architecture
-  correctness.md    — Audit against official MongoDB docs
+  architecture.md       — Full technical architecture with module dependency diagram
+  correctness.md        — Audit against official MongoDB docs
 prompts/
-  quality-standards.md      — Code quality rules
+  quality-standards.md      — Code quality rules and scorecard
   quality-check-prompt.md   — Pre-close validation checklist
   iteration-log-prompt.md   — How to create iteration logs
-logs/iterations/    — Numbered iteration logs (NN-short-name.md)
+  test-gap-backlog.md       — Prioritized untested areas
+logs/iterations/            — Numbered iteration logs (NN-short-name.md)
 ```
 
 ## Key patterns
@@ -57,7 +67,7 @@ The `state` object is the single source of truth. Key fields:
 - `state.links` — 5 booleans: `ps1`, `ps2`, `s1s2`, `wp`, `rp`
 - `state.writeClient.targetNode` / `state.readClient.targetNode` — manual client targeting (null = auto)
 
-### Write machine (`js/simulation.js`)
+### Write machine (`js/write-machine.js`)
 
 `createWriteMachine(w, j)` returns a lazy step generator. Call `.nextStep()` to get the next step, then `step.run()`. The machine re-evaluates live topology on each call — if a node crashes mid-write, it adapts automatically.
 
@@ -67,11 +77,12 @@ Every user-facing string lives here. When changing step titles or explains, edit
 
 ### Canvas (`js/draw.js`)
 
-The `draw()` function redraws the entire canvas every frame. Layout is computed in `computeLayout()`. Hit testing in `hitTest()` determines what the user clicked/hovered.
+The `draw()` function redraws the entire canvas every frame. Layout is computed in `computeLayout()`. Hit testing in `hitTest()` determines what the user clicked/hovered. Consistency overlay HTML is in `status-views.js`.
 
 ## Before submitting changes
 
-1. `node --test test/*.test.js` — all 122+ tests must pass
-2. Check `docs/architecture.md` and `docs/correctness.md` for stale content
-3. For major changes: create iteration log per `prompts/iteration-log-prompt.md`
-4. Update `index.html` footer "Last updated" with date AND time
+1. `npm test` — all 153+ tests must pass
+2. Run `node scripts/measure-quality.js` — quality score must not decrease
+3. Check `docs/architecture.md` and `docs/correctness.md` for stale content
+4. For major changes: create iteration log per `prompts/iteration-log-prompt.md`
+5. Update `index.html` footer "Last updated" with date AND time

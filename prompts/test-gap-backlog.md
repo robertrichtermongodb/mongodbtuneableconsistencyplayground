@@ -20,19 +20,16 @@ Still needs: direct unit tests for cap behavior and no-op case.
 ### Scenario integration tests → covered
 `test/scenarios.test.js` — all 7 predefined scenarios (safe-write, partition-safe, snapshot-isolation, linearizable, w1-data-loss, dirty-read, fire-forget).
 
-## High Priority
+### ~~4. Client targeting + read operations~~ → covered (iteration 29)
+`test/app.test.js` — manual target overrides readPreference, dead target errors, isolated secondary returns stale data, effectiveWriteTarget override.
 
-### 4. Client targeting + read operations
-- Manual read target with rc:linearizable should still return data (even though linearizable normally forces primary)
-- Manual read target to a dead node — how does it behave?
-- Read from isolated node — served version should still work but may be stale
+### ~~7. `cycleClientTarget()` cycling~~ → covered (iteration 29)
+`test/app.test.js` — write/read client cycle through null → primary → s1 → s2 → null; cycling works after election.
+
+## High Priority
 
 ### 6. Write machine with client targeting mid-write
 What happens if targetNode changes during an active write machine? (Edge case — probably fine since machine captures target at creation time)
-
-### 7. `cycleClientTarget()` cycling
-- Cycles through null → primary → s1 → s2 → null
-- After election where primaryKey changed, cycling still works
 
 ### 8. Canvas interaction integration
 These are harder to test (need DOM):

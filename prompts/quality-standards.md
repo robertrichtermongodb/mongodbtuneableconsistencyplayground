@@ -270,3 +270,29 @@ Each metric: **GREEN = 2, YELLOW = 1, RED = 0**. Maximum: **22** (11 metrics).
 - **Test infrastructure:** Extended `test/helpers.js` with element registry (mutable `.value` for selects), `scenarioMode` option (auto-resolves `waitForClick`), bridged `runMachine`/`arrayMachine`/`isEngineActive`/`TEXTS`
 - **Scenario helpers (new):** `test/scenario-helpers.js` — `applyScenario`, `performWrite/Read/Election`, `crashNodeByKey`, `recoverNodeByKey`, `healPartition`, `resetEngines` + 6 named assertion helpers
 - No production code changes — 146/146 tests passing (131 existing + 15 new)
+
+## Snapshot — 2026-04-10 (iteration 29: draw.js split, client-targeting tests, docs refresh)
+
+*Measured with `node scripts/measure-quality.js`.*
+
+| # | Metric | Previous | Current | Δ | Rating |
+|---|--------|----------|---------|---|--------|
+| 1 | Max function length | 30 (`drawLockHint`) | 30 (`drawLockHint`) | 0 | GREEN |
+| 2 | Functions > 30 lines | 0 | 0 | 0 | GREEN |
+| 3 | Avg function length | 10.4 | 10.4 | 0 | GREEN |
+| 4 | Magic numbers | ~65 | ~65 | 0 | RED |
+| 5 | Single-char variables | 2 | 2 | 0 | GREEN |
+| 6 | Max nesting depth | 3 (`awaitParticle`) | 3 (`awaitParticle`) | 0 | GREEN |
+| 7 | Max file length | 806 (`draw.js`) | 726 (`draw.js`) | **-80** | RED |
+| 8 | Mixed-abstraction functions | ~3 | ~2 | -1 | YELLOW |
+| 9 | Duplicated code patterns | ~0 | ~0 | 0 | GREEN |
+| 10 | Tests passing | 100% | 100% | 0 | GREEN |
+| 11 | Opaque conditionals | 0 | 0 | 0 | GREEN |
+| | **Total** | **19 / 22** | **19 / 22** | **0** | **Healthy** |
+
+**Changes:**
+- **`draw.js` → `status-views.js` extraction:** Moved `updateWriteStatusView`, `readStatusHTML`, `updateReadStatusView`, `updateConsistencyViews`, `updateReadActionControls` (79 lines) into new `js/status-views.js`. `draw.js` dropped from 806 to 726 lines (−80). Metric #7 still RED (threshold: 500) but significantly improved.
+- **Mixed-abstraction improvement (#8):** The extracted status-view functions were the primary "DOM HTML generation inside a canvas rendering module" smell. Remaining ~2 mixed functions are in `app.js` event handlers (unavoidable orchestration mixing).
+- **Client-targeting tests (backlog #4, #7):** `test/app.test.js` — manual read target overrides readPreference, dead target errors, isolated secondary reads, effectiveWriteTarget override, cycleClientTarget cycling (null → primary → s1 → s2 → null), cycling after election.
+- **Documentation refresh:** Updated README.md (file structure, test count, quality score), added Mermaid module dependency diagram to `docs/architecture.md`, updated contributor guide, updated `.cursor/rules/tcp-project.mdc` load order and responsibilities.
+- 153/153 tests passing (146 existing + 7 new)
